@@ -1,4 +1,4 @@
-# Siren 🎧
+# Siren 
 
 A clean and simple **Jellyfin music web client**. Connect to your Jellyfin server,
 browse albums/artists/playlists, search, favorite, and stream music — all from
