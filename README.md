@@ -1,6 +1,6 @@
 # Siren 🎧
 
-A Spotify-like **Jellyfin music web client**. Connect to your Jellyfin server,
+A clean and simple **Jellyfin music web client**. Connect to your Jellyfin server,
 browse albums/artists/playlists, search, favorite, and stream music — all from
 a clean, self-hosted web UI. The Jellyfin token is kept **server-side** in an
 httpOnly session cookie and is never exposed in the browser or in URLs.
