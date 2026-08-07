@@ -68,7 +68,7 @@ export default function ExpandedPlayer({ open, onClose }: ExpandedPlayerProps) {
   return (
     <div
       className={cn(
-        'fixed inset-0 z-40 flex flex-col bg-background transition-all duration-300 ease-out',
+        'fixed inset-0 z-40 flex flex-col overflow-hidden bg-background transition-all duration-300 ease-out',
         open
           ? 'pointer-events-auto translate-y-0 opacity-100'
           : 'pointer-events-none translate-y-8 opacity-0'
@@ -90,7 +90,7 @@ export default function ExpandedPlayer({ open, onClose }: ExpandedPlayerProps) {
           Landscape (default): stacked — artwork/controls on top, queue fills a
           centered column below (slightly wider than the artwork section).
           Portrait: two-column — artwork/controls left, queue right. */}
-      <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-col portrait:max-w-none portrait:flex-row">
+      <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col portrait:max-w-none portrait:flex-row">
         {/* Artwork + controls column */}
         <div className="flex min-h-0 flex-col items-center justify-center gap-5 overflow-y-auto px-6 pb-6 pt-2 md:gap-6 portrait:flex-1">
           {/* Adaptive artwork — square album art or 16:9 thumbnail */}
@@ -197,7 +197,7 @@ export default function ExpandedPlayer({ open, onClose }: ExpandedPlayerProps) {
         {/* Queue column.
             Landscape: fills bottom width with a top border.
             Portrait: fixed-width right panel with a left border. */}
-        <div className="flex min-h-0 w-full shrink-0 flex-col border-t border-border portrait:w-[320px] portrait:border-l portrait:border-t-0 portrait:md:w-[380px]">
+        <div className="flex min-h-0 w-full flex-1 flex-col border-t border-border portrait:w-[320px] portrait:flex-none portrait:border-l portrait:border-t-0 portrait:md:w-[380px]">
           <RightSidebar open />
         </div>
       </div>
