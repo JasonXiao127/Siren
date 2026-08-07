@@ -1,0 +1,18 @@
+{
+  "name": "siren",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Siren — Spotify-like Jellyfin music web client",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm run dev --workspace=@siren/server\" \"npm run dev --workspace=@siren/client\"",
+    "build": "npm run build --workspace=@siren/server && npm run build --workspace=@siren/client",
+    "start": "npm run start --workspace=@siren/server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
