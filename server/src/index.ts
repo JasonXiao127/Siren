@@ -23,6 +23,14 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        // Disable helmet's default `upgrade-insecure-requests`. That directive
+        // makes browsers rewrite every subresource to HTTPS, which breaks a
+        // plain-HTTP server reached via a LAN IP (e.g. http://192.168.x.x) —
+        // the JS bundle is requested over https:// and never loads (white
+        // screen). Localhost is unaffected because it's a secure context, which
+        // is why this only fails on LAN/non-secure origins. This app loads only
+        // same-origin resources, so it doesn't need the upgrade.
+        upgradeInsecureRequests: null,
         // Media (audio) and images are streamed through our own /api/proxy
         // endpoint, so 'self' covers them. Blob/data are needed for audio
         // element edge cases in some browsers.
