@@ -1,4 +1,4 @@
-# Siren 🎧
+# Siren 
 
 A clean, cross-platform **Jellyfin music client for the desktop**. Connect to
 your Jellyfin server, browse albums/artists/playlists, search, favorite, and
