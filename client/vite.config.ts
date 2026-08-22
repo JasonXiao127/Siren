@@ -10,9 +10,12 @@ export default defineConfig({
     },
   },
   server: {
-    // Dev UI runs on 5174; the Express server (the production default) owns
-    // 5173, so the two never collide when `npm run dev` starts them together.
+    // Dev UI runs on 5174; the Express server (embedded in Electron's
+    // utility process) owns 5173, so the two never collide. strictPort
+    // prevents Vite from silently incrementing the port if 5174 is busy —
+    // the Electron dev shell would otherwise load a URL that serves nothing.
     port: 5174,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://localhost:5173',

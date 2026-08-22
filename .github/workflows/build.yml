@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Artifacts only — no releases are created by this workflow.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: --win
+          - os: macos-latest
+            args: --mac
+          - os: ubuntu-latest
+            args: --linux
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Electron's postinstall downloads the platform binary. (The local
+      # `allowScripts` package.json field is a wrapper feature plain npm
+      # ignores; scripts run by default here.)
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Package (unsigned)
+        run: npx electron-builder ${{ matrix.args }} --publish never
+        env:
+          # Unsigned builds; wire CSC_LINK / CSC_KEY_PASSWORD (macOS) or a
+          # Windows code-signing cert here when certificates are available.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: siren-${{ matrix.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+            release/*.blockmap
+          if-no-files-found: error

@@ -55,3 +55,23 @@
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground));
 }
+
+/* ---------------------------------------------------------------------------
+ * Window chrome (Electron hidden title bar).
+ * The app's TopBar is the window header: it drags the window, and native
+ * min/max/close buttons are overlaid by the OS in the top-right corner.
+ * ------------------------------------------------------------------------- */
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Keep interactive content clear of the native overlay buttons. The env vars
+ * only exist when titleBarOverlay is active; the fallback makes this a no-op
+ * in plain browsers. */
+.titlebar-safe {
+  padding-right: calc(100vw - env(titlebar-area-width, 100vw));
+}

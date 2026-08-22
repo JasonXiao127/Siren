@@ -1,6 +1,5 @@
 import { Router, Request, Response, raw, json } from 'express';
 import axios, { AxiosError, AxiosResponse } from 'axios';
-import os from 'os';
 import rateLimit from 'express-rate-limit';
 import { LoginRequest, JellyfinAuthResponse, LoginSuccessResponse } from './types';
 import {
@@ -15,44 +14,28 @@ import {
 const router = Router();
 
 const CLIENT_NAME = 'Siren';
-const CLIENT_VERSION = '1.0.0';
-const DEVICE_NAME = 'Web Browser';
+// Kept in sync with the app version via the SIREN_APP_VERSION esbuild define
+// (see scripts/build-electron.mjs); falls back for standalone runs.
+const CLIENT_VERSION = process.env.SIREN_APP_VERSION || '1.0.0';
 
 function buildAuthHeader(deviceId: string): string {
-  return `MediaBrowser Client="${CLIENT_NAME}", Device="${DEVICE_NAME}", DeviceId="${deviceId}", Version="${CLIENT_VERSION}"`;
+  // Read lazily so bundling can't produce load-order bugs.
+  const deviceName = process.env.SIREN_DEVICE_NAME || 'Siren Desktop';
+  return `MediaBrowser Client="${CLIENT_NAME}", Device="${deviceName}", DeviceId="${deviceId}", Version="${CLIENT_VERSION}"`;
 }
 
 // ---------------------------------------------------------------------------
-// SSRF / self-loop protection
+// URL validation
+//
+// Siren is a single-user desktop app: the proxy is only reachable from this
+// machine (loopback bind + token header), so the old web-hosting SSRF threat
+// model no longer applies. Users commonly run Jellyfin on localhost or
+// another LAN box, so private/loopback targets are allowed. We keep a minimal
+// guard: strict http/https protocol and link-local addresses (169.254.0.0/16,
+// fe80::/10) which have no legitimate use here.
 // ---------------------------------------------------------------------------
 
-// Blocks only the ranges that matter for this app's threat model:
-//   - 169.254.0.0/16 (link-local / cloud metadata endpoint)
-//   - 127.0.0.0/8, ::1, 0.x (loopback)
-// Private RFC1918 ranges (10.x, 172.16-31.x, 192.168.x) and IPv6 ULA
-// (fc00::/7) are intentionally ALLOWED — a home Jellyfin server is typically
-// on the LAN, and every proxied request requires a valid session cookie, so
-// unauthenticated SSRF isn't possible.
-const BLOCKED_IPV4_RE = /^(169\.254\.|127\.|0\.)/;
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
-
-function isPrivateHostname(hostname: string): boolean {
-  const lower = hostname.toLowerCase();
-  if (LOOPBACK_HOSTS.has(lower)) return true;
-  if (lower === os.hostname().toLowerCase()) return true;
-  // IPv4 literal
-  if (BLOCKED_IPV4_RE.test(lower)) return true;
-  // IPv6 loopback / link-local (cloud metadata)
-  if (lower.startsWith('::1') || lower.startsWith('fe80:')) {
-    return true;
-  }
-  return false;
-}
-
-function isSelfLoop(hostname: string, port: string): boolean {
-  const serverPort = process.env.PORT || '5173';
-  return LOOPBACK_HOSTS.has(hostname.toLowerCase()) && port === serverPort;
-}
+const BLOCKED_IPV4_RE = /^(169\.254\.|0\.)/;
 
 function validateServerUrl(serverUrl: string): URL | null {
   try {
@@ -60,10 +43,11 @@ function validateServerUrl(serverUrl: string): URL | null {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return null;
     }
-    if (isPrivateHostname(url.hostname)) {
+    const hostname = url.hostname.toLowerCase();
+    if (BLOCKED_IPV4_RE.test(hostname)) {
       return null;
     }
-    if (isSelfLoop(url.hostname, url.port || (url.protocol === 'https:' ? '443' : '80'))) {
+    if (hostname.startsWith('fe80:')) {
       return null;
     }
     return url;
@@ -121,7 +105,21 @@ router.post(
         }
       );
 
-      const data = response.data;
+      const data = response.data as JellyfinAuthResponse | undefined;
+      // Validate the upstream shape: a captive portal, proxy page, or
+      // unexpected Jellyfin version would otherwise throw mid-handler and
+      // leave the request hanging forever (Express 4 doesn't catch async
+      // throws).
+      if (
+        !data ||
+        typeof data.AccessToken !== 'string' ||
+        !data.User ||
+        typeof data.User.Id !== 'string' ||
+        typeof data.User.Name !== 'string'
+      ) {
+        return res.status(502).json({ error: 'Unexpected response from Jellyfin server' });
+      }
+
       const session = createSession({
         serverUrl: validatedUrl.toString().replace(/\/$/, ''),
         token: data.AccessToken,
@@ -130,8 +128,10 @@ router.post(
         userName: data.User.Name,
       });
 
-      const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-      res.cookie(SESSION_COOKIE_NAME, session.id, cookieOptions(secure));
+      // The renderer reaches us exclusively via the loopback server behind
+      // the app:// protocol handler — there is no TLS hop to protect, and a
+      // Secure flag risks rejection by the cookie jar on the custom scheme.
+      res.cookie(SESSION_COOKIE_NAME, session.id, cookieOptions(false));
 
       const result: LoginSuccessResponse = {
         user: {
@@ -163,13 +163,34 @@ router.post(
 );
 
 // POST /api/auth/logout
-router.post('/auth/logout', (req: Request, res: Response) => {
+router.post('/auth/logout', async (req: Request, res: Response) => {
   const cookies = parseCookies(req.headers.cookie);
   const sessionId = cookies[SESSION_COOKIE_NAME];
-  if (sessionId) {
-    deleteSession(sessionId);
+  const session = sessionId ? getSession(sessionId) : null;
+
+  if (session) {
+    // Best-effort revocation of the Jellyfin access token so it can't be
+    // used after logout. Failures (server down, already revoked) are fine —
+    // the token expires on Jellyfin's side eventually regardless.
+    try {
+      await axios.post(
+        `${session.serverUrl}/Sessions/Logout`,
+        {},
+        {
+          headers: {
+            'X-Emby-Token': session.token,
+            'X-Emby-Authorization': buildAuthHeader(session.deviceId),
+          },
+          timeout: 5000,
+        }
+      );
+    } catch {
+      // Ignore — local session deletion proceeds either way.
+    }
+    deleteSession(session.id);
   }
-  res.clearCookie(SESSION_COOKIE_NAME, cookieOptions(!!(req.secure || req.headers['x-forwarded-proto'] === 'https')));
+
+  res.clearCookie(SESSION_COOKIE_NAME, cookieOptions(false));
   res.json({ ok: true });
 });
 
@@ -228,25 +249,38 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
   // upgrade, trailing-slash normalization) into a bodiless error response,
   // which broke every <img> and JSON call for such setups.
   const MAX_REDIRECTS = 5;
+  // Abort if upstream doesn't produce response headers within this window —
+  // a hung Jellyfin connection would otherwise hold the socket forever. The
+  // timer is cleared once headers arrive so long audio streams are untouched.
+  const HEADER_TIMEOUT_MS = 20000;
   let currentUrl: URL = targetUrl;
   let response: AxiosResponse | null = null;
 
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const hopResponse = await axios({
-        method: req.method,
-        url: currentUrl.toString(),
-        responseType: 'stream',
-        validateStatus: () => true,
-        maxRedirects: 0,
-        headers: {
-          'X-Emby-Token': token,
-          'X-Emby-Authorization': buildAuthHeader(deviceId),
-          ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}),
-          ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {}),
-        },
-        data: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
-      });
+      const controller = new AbortController();
+      const headerTimer = setTimeout(() => controller.abort(), HEADER_TIMEOUT_MS);
+      let hopResponse: AxiosResponse;
+      try {
+        hopResponse = await axios({
+          method: req.method,
+          url: currentUrl.toString(),
+          responseType: 'stream',
+          validateStatus: () => true,
+          maxRedirects: 0,
+          signal: controller.signal,
+          headers: {
+            'X-Emby-Token': token,
+            'X-Emby-Authorization': buildAuthHeader(deviceId),
+            ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}),
+            ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {}),
+          },
+          data: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
+        });
+      } finally {
+        // Headers received (or the attempt failed) — never abort mid-stream.
+        clearTimeout(headerTimer);
+      }
       response = hopResponse;
 
       const status = hopResponse.status;
@@ -273,6 +307,14 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
     }
   } catch (error) {
     const axiosError = error as AxiosError;
+    if (
+      axiosError.code === 'ERR_CANCELED' ||
+      axiosError.code === 'ECONNABORTED'
+    ) {
+      // Header timeout fired — upstream accepted the connection but never
+      // responded.
+      return res.status(504).json({ error: 'Bad gateway: Jellyfin server timed out' });
+    }
     if (axiosError.response) {
       // Forward error status and body
       res.status(axiosError.response.status);
@@ -318,10 +360,33 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
     res.setHeader('Accept-Ranges', 'bytes');
   }
 
+  // Range-dependent responses must never be served across mismatched ranges
+  // by an intermediate cache.
+  const existingVary = res.getHeader('vary');
+  if (!existingVary) {
+    res.setHeader('Vary', 'Range');
+  } else if (!String(existingVary).toLowerCase().includes('range')) {
+    res.setHeader('Vary', `${existingVary}, Range`);
+  }
+
   // Cache images for 24 hours
   if (targetPath.includes('/Images/') && !res.getHeader('cache-control')) {
     res.setHeader('Cache-Control', 'public, max-age=86400');
   }
+
+  // Stream with explicit error handling. If the renderer navigates away or
+  // reloads mid-stream, `res` closes while the upstream pipe is active —
+  // without these handlers the resulting EPIPE/aborted-stream errors surface
+  // as uncaught exceptions (fatal in the Electron child process).
+  response.data.on('error', () => {
+    destroyStream(response?.data);
+    if (!res.writableEnded) {
+      res.destroy();
+    }
+  });
+  res.on('close', () => {
+    destroyStream(response?.data);
+  });
 
   // Pipe the stream
   response.data.pipe(res);

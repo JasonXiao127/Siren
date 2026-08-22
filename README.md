@@ -1,82 +1,125 @@
 # Siren 🎧
 
-A clean and simple **Jellyfin music web client**. Connect to your Jellyfin server,
-browse albums/artists/playlists, search, favorite, and stream music — all from
-a clean, self-hosted web UI. The Jellyfin token is kept **server-side** in an
-httpOnly session cookie and is never exposed in the browser or in URLs.
+A clean, cross-platform **Jellyfin music client for the desktop**. Connect to
+your Jellyfin server, browse albums/artists/playlists, search, favorite, and
+stream music — built with Electron, React, and an embedded Node backend.
 
-## Run with Docker Compose
+Your Jellyfin token is kept **out of the renderer**: it lives in the embedded
+backend process behind a loopback-only connection with a per-launch token,
+and the browser side authenticates with an httpOnly session cookie. Sessions
+persist across app restarts.
 
-The pre-built image is published to Docker Hub — no source code or Node needed.
-Just save the file below as `docker-compose.yml` and run `docker compose up -d`:
+## Download
 
-```yaml
-services:
-  siren:
-    image: maraudermarauder/siren:1.0.0
-    container_name: siren
-    ports:
-      - "5173:5173"
-    environment:
-      - PORT=5173
-      - NODE_ENV=production
-      # Set TRUST_PROXY=1 when running behind a TLS reverse proxy (Caddy,
-      # Nginx, Traefik). Keeps the session cookie 'secure' and the login
-      # rate-limiter on real client IPs.
-      - TRUST_PROXY=0
-    restart: unless-stopped
-```
+Grab an installer from the
+[Releases](../../releases) page (built by CI on every `v*` tag):
 
-Then open **http://localhost:5173** and sign in with your Jellyfin server URL,
-username, and password.
+| Platform | Format |
+| -------- | ------ |
+| Windows  | NSIS installer (`.exe`) |
+| macOS    | DMG (Intel + Apple Silicon) |
+| Linux    | AppImage / `.deb` |
 
-> Your Jellyfin **server address and credentials are entered at login by each
-> user** — nothing is baked into the image, and the password only ever travels
-> to *your* Jellyfin server (through the proxy), never to Docker Hub or Siren.
+> **Builds are currently unsigned.** Expect a SmartScreen warning on Windows
+> ("More info" → "Run anyway") and Gatekeeper friction on macOS (right-click →
+> Open, or System Settings → Privacy & Security → "Open Anyway").
 
-### Configuration
-
-| Environment variable | Default | Description |
-| -------------------- | ------- | ----------- |
-| `PORT`               | `5173`  | HTTP port the server listens on. |
-| `NODE_ENV`           | `development` | `production` disables dev-only CSP relaxations and serves the built client. |
-| `TRUST_PROXY`        | `0`     | Number of reverse-proxy hops to trust. Set to `1` (or higher) behind a TLS reverse proxy so the session cookie is set `secure` and the login rate-limiter uses real client IPs. |
-
-### Securing it publicly
-
-- Put Siren **behind a TLS reverse proxy** (Caddy/Nginx/Traefik) with it bound to
-  `127.0.0.1:5173` only, and set `TRUST_PROXY=1`.
-- The container already runs as a **non-root user** and ships with a
-  `HEALTHCHECK` against `/api/health`.
-- Login is rate-limited (20 attempts / 15 min per IP).
-
-## Local development
+## Development
 
 ```bash
 npm install
-npm run dev        # Express server (:5173) + Vite dev UI (:5174)
-npm run build      # type-checks + builds both workspaces
-npm start          # runs the built server in production mode
+npm run dev        # esbuild watch + Vite HMR + Electron window
+npm run typecheck  # typechecks electron/ + server/
+npm run build      # builds client + bundles main/server processes
+npm start          # runs the packaged-layout app locally (no installer)
 ```
 
-> During `npm run dev`, the Vite dev server uses **5174** and proxies `/api` to
-> the Express server on **5173** so the two never collide. In production the
-> single container serves both the API and the built client on **5173**.
+`npm run dev` starts three things:
+
+- **esbuild watch** — bundles `electron/main.ts` and `server/src/child.ts`
+  into `dist-electron/`; any change restarts Electron.
+- **Vite** — serves the React UI on `http://localhost:5174` (strict port)
+  with HMR, proxying `/api` to the embedded server on `5173`.
+- **Electron** — loads the Vite URL; the Express server runs inside a
+  dedicated utility process owned by the Electron main process.
+
+## Production architecture
+
+```
+┌─ Electron main process ─────────────────────────────┐
+│  BrowserWindow ← stable origin app://siren          │
+│  protocol.handle('app') ──▶ utilityProcess.fork     │
+│                              Express server         │
+│                              127.0.0.1:<ephemeral>  │
+│                              sessions.json in       │
+│                              userData               │
+└─────────────────────────────────────────────────────┘
+```
+
+Why this shape:
+
+- **Stable origin (`app://siren`)** — localStorage is origin-scoped *including
+  port*, so an ephemeral `http://127.0.0.1:<port>` origin would wipe settings,
+  deviceId, and login state every launch. The custom scheme is registered as
+  standard + secure, giving a permanent origin and a secure context.
+- **Server in a utility process** — a crash in the backend can't take down
+  the window; streaming/proxy work never contends with the main-process event
+  loop. The child is respawned with backoff if it dies.
+- **Loopback token** — every `/api` request must carry a per-launch random
+  header injected by the protocol handler, so other local processes can't use
+  Siren as a proxy or attempt logins through it.
+- **Session persistence** — logins survive restarts via atomic writes to
+  `userData/sessions.json` (mode 0600 on POSIX; Windows uses default user
+  ACLs), flushed synchronously on quit.
+
+## Known limitations
+
+- **Tokens at rest are plaintext.** `sessions.json` holds live Jellyfin
+  access tokens unencrypted. The proper fix is OS-keychain integration
+  (DPAPI / Keychain / libsecret), which requires a native dependency and
+  breaks the zero-runtime-dependency packaging model — deferred until
+  needed.
+- **URL validation is hostname-based.** Blocked ranges (link-local) are
+  matched against the literal hostname, not its resolved IP, so a DNS name
+  resolving into a blocked range would pass. Acceptable for a token-gated,
+  single-user desktop app.
+- **Closing the window quits the app on all platforms**, including macOS
+  (where convention keeps the app running in the dock).
+- **Builds are unsigned** — see the install warnings above.
 
 ## Project layout
 
 ```
-client/   React + Vite + Tailwind frontend
-server/   Express API — auth, Jellyfin proxy, and static file serving
-Dockerfile         multi-stage image (builder → slim runner, non-root)
-docker-compose.yml pinned compose file
+client/            React + Vite + Tailwind frontend (unchanged web codebase)
+server/            Express API — auth, Jellyfin proxy, session persistence
+electron/main.ts   Window lifecycle, app:// protocol handler, guards
+packaging/         App icon sources (icon.ico/icon.png), picked up by electron-builder
+scripts/dev.mjs    Dev orchestrator (esbuild watch + Vite + Electron)
+scripts/build-electron.mjs  esbuild bundling (main.cjs + server.cjs)
+scripts/gen-icon.cjs  Rasterizes client/public/siren.svg → packaging/ icons (`npm run icons`)
+.github/workflows/build.yml  Cross-platform release builds (win/mac/linux)
 ```
 
-## Security notes & limitations
+## Packaging notes
 
-- **Session store is in-memory**: users must sign in again after the container
-  restarts, and multi-replica deployments need a shared session store. This is
-  fine for a single-instance home setup.
-- **No scope creep**: rate-limit counts and sessions live per-instance.
-- The proxy is hardened against SSRF/self-loop (blocks link-local / loopback /
-  cloud-metadata addresses) and re-validates every redirect hop.
+- The app icon lives in `packaging/` (`icon.ico` multi-resolution + `icon.png`),
+  generated from the UI logo by `npm run icons`. electron-builder embeds it in
+  the executable automatically.
+- The packaged app contains **only** `dist-electron/**` and `client/dist/**`
+  — every runtime dependency is bundled into the two CJS files (the only
+  external is `electron` itself). If you add a native dependency, mark it
+  `external` in `scripts/build-electron.mjs` and add it to `asarUnpack` in
+  `electron-builder.yml`.
+- DMGs can only be built on macOS — use the CI workflow or a Mac for that
+  target (`npm run dist:mac`).
+- Code signing hooks are stubbed in CI (`CSC_IDENTITY_AUTO_DISCOVERY=false`);
+  set `CSC_LINK`/`CSC_KEY_PASSWORD` secrets when certificates are available.
+
+## Security notes
+
+- Jellyfin credentials go only to *your* Jellyfin server (through the local
+  proxy) — never anywhere else.
+- Session cookies are httpOnly; the Jellyfin access token never enters the
+  renderer, URLs, or logs (query strings are redacted from access logs).
+- The proxy validates upstream URLs (http/https only, link-local blocked) and
+  re-validates every redirect hop.

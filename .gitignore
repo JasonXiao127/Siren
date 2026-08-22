@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 build/
+dist-electron/
+release/
+release-new/
 
 # Environment files
 .env

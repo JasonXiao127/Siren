@@ -50,7 +50,7 @@ export default function TopBar() {
       </div>
 
       {/* Search */}
-      <form onSubmit={handleSearch} className="relative w-96">
+      <form onSubmit={handleSearch} className="app-no-drag relative w-96">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           type="search"
@@ -64,7 +64,7 @@ export default function TopBar() {
       {/* User menu */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="gap-2">
+          <Button variant="ghost" size="sm" className="app-no-drag gap-2">
             <User className="h-4 w-4" />
             <span>{user?.name || 'User'}</span>
           </Button>

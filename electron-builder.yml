@@ -1,0 +1,43 @@
+# electron-builder configuration.
+#
+# PACKAGING INVARIANT: the app ships ONLY the two bundled CJS files and the
+# built client — no runtime node_modules. Both bundles externalize nothing
+# except `electron` (see scripts/build-electron.mjs). If a native dependency
+# is ever added, it must be added to esbuild's `external` AND asarUnpack here.
+
+appId: app.siren.client
+productName: Siren
+directories:
+  output: release
+  # NOT named "build/" — that pattern is gitignored, which would silently
+  # untrack icons/resources placed here.
+  buildResources: packaging
+files:
+  - dist-electron/**/*
+  - client/dist/**/*
+  - package.json
+  # Sourcemaps are dev-only artifacts; never ship them.
+  - '!**/*.map'
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+mac:
+  category: public.app-category.music
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+linux:
+  category: Audio
+  target:
+    - AppImage
+    - deb
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

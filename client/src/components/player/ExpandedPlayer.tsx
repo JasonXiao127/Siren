@@ -75,11 +75,13 @@ export default function ExpandedPlayer({ open, onClose }: ExpandedPlayerProps) {
       )}
       aria-hidden={!open}
     >
-      {/* Header row: collapse */}
-      <div className="flex shrink-0 items-center justify-between px-4 py-3">
+      {/* Header row: window drag strip + collapse. The row is a drag region
+          (the TopBar's is disabled while this overlay is open); the button
+          opts out so it stays clickable. */}
+      <div className="app-drag flex shrink-0 items-center justify-between px-4 py-3">
         <button
           onClick={onClose}
-          className="flex items-center gap-1 rounded-full px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          className="app-no-drag flex items-center gap-1 rounded-full px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
         >
           <ChevronDown className="h-4 w-4" />
           Collapse

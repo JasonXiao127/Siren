@@ -50,7 +50,9 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen w-full items-center justify-center bg-background p-4 py-8">
+    <div className="relative flex min-h-screen w-full items-center justify-center bg-background p-4 py-8">
+      {/* Window drag region (hidden title bar) */}
+      <div className="app-drag absolute inset-x-0 top-0 z-40 h-9" />
       <div className="w-full max-w-md space-y-8">
         <div className="flex flex-col items-center gap-2">
           <img src="/siren.svg" alt="Siren" className="h-16 w-16" />

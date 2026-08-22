@@ -27,8 +27,16 @@ function ProtectedLayout() {
 
   return (
     <div className="flex h-screen w-screen flex-col">
-      {/* Top bar */}
-      <div className="h-[60px] shrink-0 border-b border-border">
+      {/* Top bar — doubles as the window drag region (hidden title bar).
+          Interactive children opt out via .app-no-drag inside TopBar.
+          Drag is disabled while the expanded player overlays it: Chromium
+          drag regions are not occlusion-aware, so leaving it active would
+          swallow real clicks on the overlay's controls. */}
+      <div
+        className={`titlebar-safe h-[60px] shrink-0 border-b border-border ${
+          playerExpanded ? '' : 'app-drag'
+        }`}
+      >
         <TopBar />
       </div>
 
