@@ -29,6 +29,8 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV HOST=0.0.0.0
+ENV SIREN_DATA_DIR=/data
 
 # Copy compiled backend
 COPY --from=builder /app/server/dist ./dist
@@ -43,8 +45,8 @@ COPY --from=builder /app/server/package.json ./server/package.json
 COPY --from=builder /app/client/package.json ./client/package.json
 RUN npm ci --omit=dev
 
-# Create non-root user
-RUN addgroup -S siren && adduser -S siren -G siren
+# Create non-root user and writable data dir for file-backed sessions
+RUN addgroup -S siren && adduser -S siren -G siren && mkdir -p /data && chown siren:siren /data
 USER siren
 
 EXPOSE 8080

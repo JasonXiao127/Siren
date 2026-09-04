@@ -1,4 +1,6 @@
-# Siren 
+# Siren
+
+> This repo supersedes the archived `Siren-Web` and `Siren-Client` repos — desktop (Electron) and web (Docker) targets now live here together.
 
 A clean, cross-platform **Jellyfin music client for the desktop**. Connect to
 your Jellyfin server, browse albums/artists/playlists, search, favorite, and
@@ -38,10 +40,31 @@ npm start          # runs the packaged-layout app locally (no installer)
 
 - **esbuild watch** — bundles `electron/main.ts` and `server/src/child.ts`
   into `dist-electron/`; any change restarts Electron.
-- **Vite** — serves the React UI on `http://localhost:5174` (strict port)
-  with HMR, proxying `/api` to the embedded server on `5173`.
+- **Vite** — serves the React UI on `http://localhost:5177` (strict port)
+  with HMR, proxying `/api` to the embedded server on `5176`.
 - **Electron** — loads the Vite URL; the Express server runs inside a
   dedicated utility process owned by the Electron main process.
+
+Desktop dev defaults: UI `5177`, API `5176` (so the frozen web archive at
+`../Siren.WebArchive` can run side-by-side on `5174`/`5173` via
+`npm run dev:both`).
+
+## Web / Docker target
+
+The same `server/` + `client/` codebase runs as a self-hosted web app:
+
+```bash
+docker compose up --build   # serves http://localhost:8080
+npm run start:web           # local equivalent: serves server/dist + client/dist
+```
+
+- Container serves `server/dist/index.js` + static `client/dist` on `PORT 8080`
+  (binds `0.0.0.0` when `NODE_ENV=production`; locally it stays loopback-only).
+- Sessions are file-backed (`SIREN_DATA_DIR`, default `./data` locally,
+  `/data` in the image). Compose mounts a named volume `siren-data:/data`
+  so logins survive container recreation.
+- Behind a TLS reverse proxy, set `TRUST_PROXY=1` so secure cookies and
+  rate-limiter IPs are correct.
 
 ## Production architecture
 

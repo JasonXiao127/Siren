@@ -107,6 +107,11 @@ export function createApp(): express.Express {
   const app = express();
   const NODE_ENV = process.env.NODE_ENV || 'production';
 
+  // Trust the upstream reverse-proxy hop count when Siren runs behind a TLS
+  // reverse proxy (Caddy, Nginx, Traefik, ...). Leave unset (0) for direct
+  // exposure. Needed so req.secure / rate-limiter client IPs are correct.
+  app.set('trust proxy', Number(process.env.TRUST_PROXY || 0));
+
   // Security headers. upgrade-insecure-requests is disabled: it rewrites
   // subresources to https:// which breaks plain-http serving, and is
   // pointless behind the app:// custom scheme. HSTS is likewise inert here.

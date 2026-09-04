@@ -10,9 +10,13 @@ loadSessions();
 
 const app = createApp();
 const PORT = Number(process.env.PORT || 5176);
+// In Docker/prod the server must bind 0.0.0.0 so the mapped port is
+// reachable from the host. Locally keep loopback-only. HOST overrides.
+const HOST =
+  process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
 
-const server = app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[siren] Server listening on http://127.0.0.1:${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  console.log(`[siren] Server listening on http://${HOST}:${PORT}`);
 });
 
 function shutdown(): void {
