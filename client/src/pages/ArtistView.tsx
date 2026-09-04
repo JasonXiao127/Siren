@@ -1,6 +1,7 @@
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { getArtistAlbums, getItem, buildImageUrl, getAlbumTracks } from '@/api/jellyfin';
@@ -28,9 +29,14 @@ export default function ArtistView() {
   });
 
   async function handlePlayAlbum(albumId: string) {
-    const tracks = await getAlbumTracks(userId, albumId);
-    if (tracks.length > 0) {
-      playQueue(tracks, 0);
+    try {
+      const tracks = await getAlbumTracks(userId, albumId);
+      if (tracks.length > 0) {
+        playQueue(tracks, 0);
+      }
+    } catch (error) {
+      console.error('Failed to load album tracks', error);
+      toast.error('Could not load album tracks');
     }
   }
 

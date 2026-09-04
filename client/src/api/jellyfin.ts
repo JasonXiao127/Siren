@@ -45,6 +45,15 @@ export interface JellyfinArtistsResponse {
   TotalRecordCount: number;
 }
 
+/**
+ * Jellyfin responses are trusted only as far as their shape is verifiable —
+ * a captive portal, proxy hiccup, or misbehaving server plugin must degrade
+ * to an empty list rather than crash the renderer mid-render.
+ */
+function toArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
 // --- Auth ---
 
 export interface LoginResponse {
@@ -91,7 +100,7 @@ export async function getPlaylists(userId: string): Promise<JellyfinItem[]> {
       Limit: 100,
     },
   });
-  return response.data.Items || [];
+  return toArray(response.data?.Items);
 }
 
 export async function getPlaylistTracks(userId: string, playlistId: string): Promise<Track[]> {
@@ -106,7 +115,7 @@ export async function getRecentlyAdded(userId: string): Promise<Track[]> {
       Fields: 'PrimaryImageAspectRatio,DateCreated',
     },
   });
-  return (response.data || []) as Track[];
+  return toArray<Track>(response.data);
 }
 
 export async function getAlbums(userId: string): Promise<JellyfinItem[]> {
@@ -119,7 +128,7 @@ export async function getAlbums(userId: string): Promise<JellyfinItem[]> {
       Limit: 200,
     },
   });
-  return response.data.Items || [];
+  return toArray(response.data?.Items);
 }
 
 export async function getFavorites(userId: string): Promise<Track[]> {
@@ -133,7 +142,7 @@ export async function getFavorites(userId: string): Promise<Track[]> {
       Limit: 200,
     },
   });
-  return (response.data.Items || []) as Track[];
+  return toArray<Track>(response.data?.Items);
 }
 
 export async function setFavorite(
@@ -159,7 +168,7 @@ export async function getRecentlyPlayed(userId: string): Promise<Track[]> {
       Fields: 'PrimaryImageAspectRatio',
     },
   });
-  return (response.data.Items || []) as Track[];
+  return toArray<Track>(response.data?.Items);
 }
 
 export async function getFrequentlyPlayed(userId: string): Promise<Track[]> {
@@ -173,7 +182,7 @@ export async function getFrequentlyPlayed(userId: string): Promise<Track[]> {
       Fields: 'PrimaryImageAspectRatio',
     },
   });
-  return (response.data.Items || []) as Track[];
+  return toArray<Track>(response.data?.Items);
 }
 
 export async function createPlaylist(userId: string, name: string): Promise<string> {
@@ -249,7 +258,7 @@ export async function getArtists(userId: string): Promise<JellyfinArtist[]> {
       Limit: 200,
     },
   });
-  return response.data.Items || [];
+  return toArray(response.data?.Items);
 }
 
 export async function searchMusic(userId: string, query: string): Promise<JellyfinItem[]> {
@@ -261,7 +270,7 @@ export async function searchMusic(userId: string, query: string): Promise<Jellyf
       Limit: 50,
     },
   });
-  return response.data.Items || [];
+  return toArray(response.data?.Items);
 }
 
 export async function getAlbumTracks(userId: string, albumId: string): Promise<Track[]> {
@@ -278,7 +287,7 @@ export async function getArtistAlbums(userId: string, artistId: string): Promise
       SortOrder: 'Ascending',
     },
   });
-  return response.data.Items || [];
+  return toArray(response.data?.Items);
 }
 
 export async function getItem(userId: string, itemId: string): Promise<JellyfinItem> {
@@ -302,7 +311,7 @@ async function getChildTracks(userId: string, parentId: string): Promise<Track[]
       Fields: 'IndexNumber,SortName,PlaylistItemId',
     },
   });
-  return (response.data.Items || []) as Track[];
+  return toArray<Track>(response.data?.Items);
 }
 
 // --- Media URL builders ---
@@ -324,7 +333,11 @@ export function buildAudioUrl(trackId: string): string {
     `?UserId=${encodeURIComponent(userId)}` +
     `&DeviceId=${encodeURIComponent(deviceId)}` +
     `&MaxStreamingBitrate=140000000` +
-    `&Container=${AUDIO_CONTAINERS}`
+    `&Container=${AUDIO_CONTAINERS}` +
+    // Pin the transcode output: <audio> can't play HLS, so a future Jellyfin
+    // default flip to hls would silently kill every transcoded format.
+    `&TranscodingProtocol=http` +
+    `&TranscodingContainer=aac`
   );
 }
 

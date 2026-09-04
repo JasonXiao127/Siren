@@ -143,6 +143,12 @@ function attachAudioListeners(audio: HTMLAudioElement) {
     next();
   });
 
+  // Successful playback start clears the strike counter — transient failures
+  // must not accumulate forever across otherwise healthy tracks.
+  audio.addEventListener('playing', () => {
+    consecutiveErrors = 0;
+  });
+
   // Sync the store's isPlaying state with the audio element's actual state,
   // but only when it matches the intended state. This prevents a feedback
   // loop where the audio element's pause event (e.g. during buffering)
@@ -238,7 +244,11 @@ function attachKeyboardShortcuts() {
 
     if (e.code === 'Space') {
       e.preventDefault();
-      usePlayerStore.getState().togglePlay();
+      // No queue → nothing to play; toggling would flip a phantom isPlaying
+      // state that the audio element can never satisfy.
+      if (usePlayerStore.getState().queue.length > 0) {
+        usePlayerStore.getState().togglePlay();
+      }
     } else if (e.key === 'ArrowRight') {
       audio.currentTime = Math.min(audio.currentTime + 5, audio.duration || 0);
       currentTime = audio.currentTime;

@@ -355,10 +355,11 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
     }
   }
 
-  // Ensure Accept-Ranges is set for audio seeking
-  if (!res.getHeader('accept-ranges')) {
-    res.setHeader('Accept-Ranges', 'bytes');
-  }
+  // Accept-Ranges is forwarded from upstream verbatim (see headersToForward)
+  // and deliberately NOT injected when absent: direct-played files get it
+  // truthfully from Jellyfin's static handler, but transcoded output is a
+  // live pipe that ignores Range requests — advertising bytes support there
+  // makes the player issue ranged seeks that restart the stream from zero.
 
   // Range-dependent responses must never be served across mismatched ranges
   // by an intermediate cache.

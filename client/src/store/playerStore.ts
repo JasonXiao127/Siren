@@ -176,10 +176,10 @@ export const usePlayerStore = create<PlayerState>()(
         const { queue, currentIndex, shuffle, repeatMode } = get();
         if (queue.length === 0) return;
 
-        if (repeatMode === 'one') {
-          // Handled by the audio player hook — seek to 0 and play
-          return;
-        }
+        // NOTE: no repeatMode === 'one' guard here — the audio hook handles
+        // repeat-one before calling next() on natural track end. This
+        // function is only reached by user intent (Next button, media keys,
+        // error-skip), which must always advance.
 
         let nextIndex = currentIndex + 1;
 

@@ -1,5 +1,6 @@
 import { useState, type MouseEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { Heart } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 import { setFavorite } from '@/api/jellyfin';
@@ -24,14 +25,18 @@ export default function LikeButton({ itemId, isFavorite, className }: LikeButton
     try {
       await setFavorite(userId, itemId, !isFavorite);
       // Invalidate favorites and any track lists that may show favorite state
-      await queryClient.invalidateQueries({ queryKey: ['favorites'] });
-      await queryClient.invalidateQueries({ queryKey: ['playlists'] });
-      await queryClient.invalidateQueries({ queryKey: ['recently-added'] });
-      await queryClient.invalidateQueries({ queryKey: ['recently-played'] });
-      await queryClient.invalidateQueries({ queryKey: ['frequently-played'] });
-      await queryClient.invalidateQueries({ queryKey: ['search'] });
-      await queryClient.invalidateQueries({ queryKey: ['playlist-tracks'] });
-      await queryClient.invalidateQueries({ queryKey: ['album-tracks'] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['favorites'] }),
+        queryClient.invalidateQueries({ queryKey: ['playlists'] }),
+        queryClient.invalidateQueries({ queryKey: ['recently-added'] }),
+        queryClient.invalidateQueries({ queryKey: ['recently-played'] }),
+        queryClient.invalidateQueries({ queryKey: ['frequently-played'] }),
+        queryClient.invalidateQueries({ queryKey: ['search'] }),
+        queryClient.invalidateQueries({ queryKey: ['playlist-tracks'] }),
+        queryClient.invalidateQueries({ queryKey: ['album-tracks'] }),
+      ]);
+    } catch {
+      toast.error('Could not update favorite');
     } finally {
       setIsPending(false);
     }
