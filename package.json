@@ -21,6 +21,8 @@
     "icons": "electron scripts/gen-icon.cjs",
     "typecheck": "tsc -p electron/tsconfig.json && tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",
     "start": "electron .",
+    "start:desktop": "electron .",
+    "start:web": "npm run start --workspace=@siren/server",
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run dist -- --win",
     "dist:mac": "npm run dist -- --mac",

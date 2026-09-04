@@ -1,0 +1,20 @@
+services:
+  siren:
+    # Build from the local Dockerfile by default. To use the pre-built image
+    # from Docker Hub instead, comment out `build` and run `docker pull` first.
+    build:
+      context: .
+    image: maraudermarauder/siren:latest
+    container_name: siren
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,22 @@
+node_modules
+dist
+client/dist
+server/dist
+.git
+*.log
+.env
+.DS_Store
+*.tsbuildinfo
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+.gitignore
+README.md
+BLUEPRINT.md
+# Desktop-only (never needed in the web image build context)
+electron
+dist-electron
+release
+release-new
+packaging
+siren-parallel.code-workspace
