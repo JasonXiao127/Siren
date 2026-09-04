@@ -28,7 +28,8 @@ import path from 'path';
 //     host-scoped only, so they'd survive — silently half-breaking the app.
 //
 // Dev mode (VITE_DEV_SERVER_URL set by scripts/dev.mjs):
-//   - The server child binds fixed port 5173 (matches Vite's /api proxy).
+//   - The server child binds fixed port 5176 (matches Vite's /api proxy).
+//     Web (Siren) keeps 5173, so both stacks run side-by-side.
 //   - The window loads the Vite dev server directly so HMR works.
 //
 // CRITICAL: responses delivered through the app:// handler must never carry
@@ -111,7 +112,7 @@ function startServerChild(): Promise<number> {
       // Vite's /api proxy, which can't know the per-launch token. Loopback
       // bind alone is acceptable protection for a dev session.
       ...(!IS_DEV ? { SIREN_TOKEN: serverToken } : {}),
-      ...(IS_DEV ? { SIREN_PORT: '5173' } : {}),
+      ...(IS_DEV ? { SIREN_PORT: '5176' } : {}),
     };
 
     const timer = setTimeout(() => {
@@ -306,9 +307,19 @@ function registerDevtoolsShortcut(win: BrowserWindow): void {
 }
 
 function createWindow(): void {
-  // The app's own TopBar is the window header — no native menu, no native
-  // title bar (titleBarStyle below).
-  Menu.setApplicationMenu(null);
+  // The app's own TopBar is the window header — no native title bar
+  // (titleBarStyle below). Windows/Linux also drop the menu entirely:
+  // Chromium handles editing keys internally there. macOS draws editing
+  // accelerators (Cmd+C/V/X/A/Q) from the application menu, so nulling it
+  // breaks paste into our own login form — darwin gets a minimal
+  // role-based menu instead.
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }])
+    );
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 
   const isMac = process.platform === 'darwin';
 

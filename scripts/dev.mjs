@@ -1,10 +1,10 @@
 // Development orchestrator.
 //
 //  1. Bundles electron/main.ts and server/src/child.ts with esbuild (watch)
-//  2. Starts the Vite dev server (client workspace, port 5174, strictPort)
+//  2. Starts the Vite dev server (client workspace, port 5177, strictPort)
 //  3. Once Vite responds, launches Electron with VITE_DEV_SERVER_URL set
-//     - the embedded server child binds fixed port 5173 (Vite's /api proxy
-//       target) in dev
+//     - the embedded server child binds fixed port 5176 (Vite's /api proxy
+//       target) in dev — web (Siren) keeps 5174/5173 so both run side-by-side
 //  4. Restarts Electron whenever either bundle rebuilds
 //  5. Tears everything down on Ctrl+C
 
@@ -20,7 +20,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const electronBinary = require('electron'); // path to the electron executable
 const { version: appVersion } = require('../package.json');
 
-const VITE_PORT = 5174;
+const VITE_PORT = 5177;
 const DEV_SERVER_URL = `http://localhost:${VITE_PORT}`;
 
 const children = new Set();
