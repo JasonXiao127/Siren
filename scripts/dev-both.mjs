@@ -1,5 +1,5 @@
-// Parallel dev: web (Siren, 5174/5173) + desktop (Siren-Client, 5177/5176).
-// Usage: npm run dev:both  (from Siren-Client root; ../Siren must exist)
+// Parallel dev: web archive (Siren.WebArchive, 5174/5173) + combined (., 5177/5176).
+// Usage: npm run dev:both  (from combined repo root; ../Siren.WebArchive must exist)
 // Web leads UI — build features there first, then port the hunk to Client.
 // Kill with Ctrl+C: both trees are torn down.
 import { spawn } from 'child_process';
@@ -9,7 +9,7 @@ import fs from 'fs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const clientRoot = path.resolve(here, '..');
-const webRoot = path.resolve(clientRoot, '..', 'Siren');
+const webRoot = path.resolve(clientRoot, '..', 'Siren.WebArchive');
 
 if (!fs.existsSync(path.join(webRoot, 'package.json'))) {
   console.error(`[dev:both] Web repo not found at ${webRoot}`);

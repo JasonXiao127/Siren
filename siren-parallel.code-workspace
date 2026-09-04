@@ -1,7 +1,7 @@
 {
   "folders": [
-    { "name": "Siren-Web", "path": "../Siren" },
-    { "name": "Siren-Client", "path": "." }
+    { "name": "Siren-WebArchive", "path": "../Siren.WebArchive" },
+    { "name": "Siren", "path": "." }
   ],
   "settings": {},
   "tasks": {
@@ -11,7 +11,7 @@
         "label": "dev:both (web 5174 + desktop Electron)",
         "type": "shell",
         "command": "npm run dev:both",
-        "options": { "cwd": "${workspaceFolder:Siren-Client}" },
+        "options": { "cwd": "${workspaceFolder:Siren}" },
         "presentation": { "reveal": "always", "panel": "new" }
       }
     ]
