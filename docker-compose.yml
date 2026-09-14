@@ -13,11 +13,17 @@ services:
       - HOST=0.0.0.0
       - NODE_ENV=production
       - SIREN_DATA_DIR=/data
+      # Subpath mount (e.g. /siren) — must match the image's BASE_PATH build
+      # arg. For the default root image leave as /. To serve under /siren,
+      # rebuild with `docker compose build --build-arg BASE_PATH=/siren` and
+      # set BASE_PATH=/siren here. Never set SIREN_TOKEN here (Electron-only;
+      # it would 403 every browser /api call).
+      - BASE_PATH=${BASE_PATH:-/}
     volumes:
       - siren-data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "const p=process.env.PORT||8080;const b=(process.env.BASE_PATH||'/').replace(/\\/+$/,'');fetch('http://localhost:'+p+b+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

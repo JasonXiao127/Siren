@@ -25,8 +25,11 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Local runtime data (sessions.json holds live Jellyfin tokens)
+data/
+
 # Task files
 task.md
 
 # Internal design docs (keep local, not published)
-BLUEPRINT.md
+AGENTS.md

@@ -29,7 +29,6 @@ import path from 'path';
 //
 // Dev mode (VITE_DEV_SERVER_URL set by scripts/dev.mjs):
 //   - The server child binds fixed port 5176 (matches Vite's /api proxy).
-//     Web (Siren) keeps 5173, so both stacks run side-by-side.
 //   - The window loads the Vite dev server directly so HMR works.
 //
 // CRITICAL: responses delivered through the app:// handler must never carry
@@ -275,7 +274,7 @@ function registerNavigationGuards(win: BrowserWindow): void {
   // and open externally instead. Same-origin navigation (e.g. the 401
   // interceptor's redirect to /login) passes through untouched. Compare
   // parsed hosts, NOT string prefixes (a startsWith check would admit
-  // http://localhost:5174.evil.com).
+  // http://localhost:9999.evil.com).
   win.webContents.on('will-navigate', (event, url) => {
     if (sameOrigin(url, allowedOrigin)) return;
     event.preventDefault();

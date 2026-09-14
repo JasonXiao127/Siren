@@ -1,8 +1,9 @@
 import axios from 'axios';
 import { useAuthStore } from '@/store/authStore';
+import { withBase } from '@/lib/base';
 
 export const apiClient = axios.create({
-  baseURL: '/api',
+  baseURL: withBase('/api'),
   timeout: 30000,
   // Send the httpOnly session cookie on every request.
   withCredentials: true,
@@ -21,14 +22,23 @@ apiClient.interceptors.response.use(
   async (error) => {
     const status = error.response?.status;
     const requestUrl: string = error.config?.url || '';
-    if (status === 401 && !requestUrl.startsWith('/auth/')) {
+    // Pathname-based so this stays correct under a subpath base (withBase)
+    // and if baseURL ever becomes absolute. error.config.url is the relative
+    // path as passed ('/auth/...'), but be defensive either way.
+    let requestPath = requestUrl;
+    try {
+      requestPath = new URL(requestUrl, 'http://localhost').pathname;
+    } catch {
+      // keep raw value
+    }
+    if (status === 401 && !requestPath.includes('/auth/')) {
       try {
         await apiClient.post('/auth/logout');
       } catch {
         // Best effort — the session also expires via TTL.
       }
       useAuthStore.getState().logout();
-      window.location.href = '/login';
+      window.location.href = withBase('/login');
     }
     return Promise.reject(error);
   }

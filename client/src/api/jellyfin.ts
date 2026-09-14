@@ -1,5 +1,6 @@
 import { apiClient } from './client';
 import { useAuthStore } from '@/store/authStore';
+import { withBase } from '@/lib/base';
 import type { Track } from '@/store/playerStore';
 
 export interface JellyfinItem {
@@ -329,7 +330,7 @@ const AUDIO_CONTAINERS = encodeURIComponent(
 export function buildAudioUrl(trackId: string): string {
   const { userId, deviceId } = useAuthStore.getState();
   return (
-    `/api/proxy/Audio/${trackId}/universal` +
+    withBase(`/api/proxy/Audio/${trackId}/universal`) +
     `?UserId=${encodeURIComponent(userId)}` +
     `&DeviceId=${encodeURIComponent(deviceId)}` +
     `&MaxStreamingBitrate=140000000` +
@@ -351,7 +352,7 @@ export function buildImageUrl(
   imageType: 'Primary' | 'Thumb' = 'Primary'
 ): string {
   return (
-    `/api/proxy/Items/${itemId}/Images/${imageType}` +
+    withBase(`/api/proxy/Items/${itemId}/Images/${imageType}`) +
     `?maxWidth=${maxWidth}` +
     `&quality=90`
   );

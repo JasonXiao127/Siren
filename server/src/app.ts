@@ -25,6 +25,21 @@ export function resolveClientDist(): string | null {
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
+/**
+ * Subpath base (Docker reverse-proxy support). Read lazily inside createApp
+ * via getBasePath() — see below. `BASE_PATH=/siren` serves the UI + API under
+ * `/siren/` (`/siren/api/...`). Defaults to `/` (root) for Electron + direct
+ * Docker runs. The client must be built with the same value as
+ * VITE_BASE_PATH (see client/vite.config.ts + client/src/lib/base.ts).
+ */
+export function getBasePath(): string {
+  let base = (process.env.BASE_PATH || '/').trim();
+  if (!base.startsWith('/')) base = `/${base}`;
+  if (base.length > 1) base = base.replace(/\/+$/, '');
+  if (base === '') base = '/';
+  return base;
+}
+
 /** Length-safe constant-time comparison for the loopback token. */
 function tokensMatch(
   received: string | string[] | undefined,
@@ -99,13 +114,21 @@ function createRotatingAccessLog(logFile: string): Writable {
  * Environment:
  *   SIREN_TOKEN     - when set, all /api routes require this header value
  *                     (injected by the Electron protocol handler; blocks
- *                     other local processes from using our proxy)
+ *                     other local processes from using our proxy).
+ *                     ELECTRON-ONLY: never set this in Docker — browsers have
+ *                     no way to send it, so every /api call would 403. Docker
+ *                     intentionally runs open and relies on the session cookie.
  *   SIREN_LOG_FILE  - when set, access logs go to this file instead of stdout
  *   NODE_ENV        - 'development' relaxes CSP for Vite dev injection
+ *   BASE_PATH       - subpath mount (e.g. `/siren`) for reverse-proxy setups.
+ *                     Must match the client's VITE_BASE_PATH build value.
+ *                     Defaults to `/` (root).
  */
 export function createApp(): express.Express {
   const app = express();
   const NODE_ENV = process.env.NODE_ENV || 'production';
+  const BASE_PATH = getBasePath();
+  const API_MOUNT = BASE_PATH === '/' ? '/api' : `${BASE_PATH}/api`;
 
   // Trust the upstream reverse-proxy hop count when Siren runs behind a TLS
   // reverse proxy (Caddy, Nginx, Traefik, ...). Leave unset (0) for direct
@@ -157,36 +180,54 @@ export function createApp(): express.Express {
     app.use(morgan(':method :url :status'));
   }
 
-  // Health check (unauthenticated — used by tooling)
-  app.get('/api/health', (_req, res) => {
+  // Health check (unauthenticated — used by tooling).
+  // NOTE: Docker intentionally leaves this unauthenticated so the container
+  // healthcheck works without a session. Only bind 0.0.0.0 when intended.
+  app.get(`${API_MOUNT}/health`, (_req, res) => {
     res.json({ status: 'ok' });
   });
 
   // Loopback token guard: when SIREN_TOKEN is set (always, in packaged
-  // builds), every API route requires the matching header. The Electron
-  // protocol handler injects it; other local processes don't know it, so
-  // they cannot use Siren as a proxy or attempt logins through it.
+  // Electron builds), every API route requires the matching header. The
+  // Electron protocol handler injects it; other local processes don't know
+  // it, so they cannot use Siren as a proxy or attempt logins through it.
+  // Docker/standalone never sets this (see env docs above).
   const expectedToken = process.env.SIREN_TOKEN;
   if (expectedToken) {
-    app.use('/api', (req, res, next) => {
+    app.use(API_MOUNT, (req, res, next) => {
       if (tokensMatch(req.headers['x-siren-token'], expectedToken)) return next();
       res.status(403).json({ error: 'Forbidden' });
     });
   }
 
   // API routes (order matters: auth before proxy)
-  app.use('/api', routes);
+  app.use(API_MOUNT, routes);
 
   // Serve the built client when present (packaged app + standalone prod).
+  // Mounted at BASE_PATH so subpath builds resolve /<base>/assets/... and
+  // /<base>/api/... from the same origin.
   const clientDistPath = resolveClientDist();
   if (clientDistPath) {
-    console.log(`[siren] Serving client from ${clientDistPath}`);
-    app.use(express.static(clientDistPath, { index: false }));
+    console.log(`[siren] Serving client from ${clientDistPath} at ${BASE_PATH}`);
+    if (BASE_PATH === '/') {
+      app.use(express.static(clientDistPath, { index: false }));
+    } else {
+      app.use(BASE_PATH, express.static(clientDistPath, { index: false }));
+      // Convenience: root redirects to the subpath so a bare host:port hit
+      // doesn't 404 confusingly. (No redirect needed for the bare base
+      // itself: express.static 301s directory paths to the trailing-slash
+      // form, and an explicit app.get(BASE_PATH) would also match BASE_PATH
+      // + '/' under non-strict routing and self-redirect forever.)
+      app.get('/', (_req, res) => {
+        res.redirect(`${BASE_PATH}/`);
+      });
+    }
 
     // SPA fallback — serve index.html for client-side routing.
     // Guard against accidentally swallowing unknown /api routes.
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api/')) {
+    const fallbackPattern = BASE_PATH === '/' ? '*' : `${BASE_PATH}/*`;
+    app.get(fallbackPattern, (req, res, next) => {
+      if (req.path === API_MOUNT || req.path.startsWith(`${API_MOUNT}/`)) {
         return next();
       }
       res.sendFile(path.join(clientDistPath, 'index.html'));
@@ -196,7 +237,7 @@ export function createApp(): express.Express {
   }
 
   // 404 handler for unmatched API routes
-  app.use('/api', (_req, res) => {
+  app.use(API_MOUNT, (_req, res) => {
     res.status(404).json({ error: 'Not found' });
   });
 

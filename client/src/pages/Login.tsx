@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuthStore } from '@/store/authStore';
 import { login as apiLogin } from '@/api/jellyfin';
+import { withBase } from '@/lib/base';
 
 function isValidServerUrl(value: string): boolean {
   try {
@@ -55,7 +56,7 @@ export default function Login() {
       <div className="app-drag absolute inset-x-0 top-0 z-40 h-9" />
       <div className="w-full max-w-md space-y-8">
         <div className="flex flex-col items-center gap-2">
-          <img src="/siren.svg" alt="Siren" className="h-16 w-16" />
+          <img src={withBase('/siren.svg')} alt="Siren" className="h-16 w-16" />
           <h1 className="text-3xl font-bold">Siren</h1>
           <p className="text-sm text-muted-foreground">
             Connect to your Jellyfin server

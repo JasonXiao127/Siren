@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuthStore } from '@/store/authStore';
 import { logout as apiLogout } from '@/api/jellyfin';
+import { withBase } from '@/lib/base';
 
 export default function TopBar() {
   const navigate = useNavigate();
@@ -45,7 +46,7 @@ export default function TopBar() {
     <div className="flex h-full items-center justify-between px-4">
       {/* Logo */}
       <div className="flex items-center gap-2">
-        <img src="/siren.svg" alt="Siren" className="h-8 w-8" />
+        <img src={withBase('/siren.svg')} alt="Siren" className="h-8 w-8" />
         <span className="text-lg font-bold">Siren</span>
       </div>
 

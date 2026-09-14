@@ -9,6 +9,7 @@ import {
 import { toast, Toaster } from 'sonner';
 import App from './App';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
+import { getBasePath } from '@/lib/base';
 import './index.css';
 
 function describeQueryError(error: unknown): string {
@@ -45,7 +46,7 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={getBasePath()}>
         <ErrorBoundary>
           <App />
         </ErrorBoundary>

@@ -1,10 +1,13 @@
 import { createApp } from './app';
 import { loadSessions, flushSessions } from './session';
 
-// Standalone entry point (local testing / headless runs). The packaged app
-// runs server/child.ts inside an Electron utilityProcess instead.
-// Default 5176 (web keeps 5173) so both stacks run side-by-side; override
-// with PORT env when needed.
+// Standalone entry point (local testing / Docker / headless runs). The
+// packaged app runs server/child.ts inside an Electron utilityProcess instead.
+// Default 5176; override with PORT env when needed. Docker sets PORT=8080.
+// NOTE: Docker/standalone intentionally runs WITHOUT SIREN_TOKEN (see
+// server/src/app.ts). Auth relies on the httpOnly session cookie; do not set
+// SIREN_TOKEN in Docker — browsers have no way to send it and all /api calls
+// would 403.
 
 loadSessions();
 
