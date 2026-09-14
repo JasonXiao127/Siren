@@ -6,9 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# Artifacts only — no releases are created by this workflow.
+# Release needs write access; everything else stays read-only.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -59,3 +59,58 @@ jobs:
             release/*.deb
             release/*.blockmap
           if-no-files-found: error
+
+  release:
+    # Manual workflow_dispatch runs build artifacts only — no release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Attach installers only — blockmaps are update-tooling noise without
+      # an update server.
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.exe
+            artifacts/*.dmg
+            artifacts/*.AppImage
+            artifacts/*.deb
+          generate_release_notes: true
+
+  docker:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # v1.1.0 tag → pushes maraudermarauder/siren:1.1.0 + :latest
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: maraudermarauder/siren
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
