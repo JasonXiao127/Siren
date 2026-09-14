@@ -5,14 +5,15 @@
 //   transparency unless the whole window is composited transparent).
 // - Emits a multi-resolution ICO (PNG-compressed entries, Vista+) covering
 //   16..256 so Windows draws crisp at every size.
-// - packaging/icon.png (256) remains for electron-builder's mac/linux
-//   conversions.
+// - packaging/icon.png (1024) feeds electron-builder's mac .icns / linux
+//   conversions — electron-builder rejects mac icons smaller than 512x512,
+//   so keep this >= 512.
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
 const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
-const PNG_SIZE = 256;
+const PNG_SIZE = 1024;
 
 /** Minimal multi-size ICO builder using PNG-compressed entries. */
 function buildIco(entries) {
@@ -64,7 +65,7 @@ app.whenReady().then(async () => {
     'data:text/html;charset=utf-8,' +
       encodeURIComponent(
         '<html><body style="margin:0;background:transparent;">' +
-          '<canvas id="c" width="256" height="256"></canvas></body></html>'
+          '<canvas id="c" width="1024" height="1024"></canvas></body></html>'
       )
   );
 
@@ -88,7 +89,7 @@ app.whenReady().then(async () => {
       const out = {};
       for (const s of sizes) out[s] = await render(s);
       // Alpha sanity check at a corner pixel of the largest render.
-      await render(${PNG_SIZE});
+      out[${JSON.stringify(PNG_SIZE)}] = await render(${PNG_SIZE});
       const px = ctx.getImageData(1, 1, 1, 1).data;
       return { dataUrls: out, cornerAlpha: px[3] };
     })()`
@@ -100,7 +101,7 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(outDir, 'icon.ico'), buildIco(icoEntries));
 
   console.log(
-    `[gen-icon] wrote icon.ico (${ICO_SIZES.join('/')}) + icon${PNG_SIZE}.png | ` +
+    `[gen-icon] wrote icon.ico (${ICO_SIZES.join('/')}) + icon.png (${PNG_SIZE}) | ` +
       `cornerAlpha=${result.cornerAlpha} (0 = fully transparent ✓)`
   );
   app.exit(result.cornerAlpha === 0 ? 0 : 1);
