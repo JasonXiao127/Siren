@@ -4,7 +4,8 @@
   "private": true,
   "description": "Siren — Jellyfin music client for the desktop",
   "author": {
-    "name": "Marauder"
+    "name": "Marauder",
+    "email": "JasonZ24@outlook.com"
   },
   "main": "dist-electron/main.cjs",
   "workspaces": [
@@ -28,7 +29,7 @@
   },
   "devDependencies": {
     "electron": "^43.4.1",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "^26.16.1",
     "esbuild": "^0.28.2"
   },
   "allowScripts": {
