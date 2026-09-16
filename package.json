@@ -1,8 +1,8 @@
 {
   "name": "siren",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
-  "description": "Siren — Jellyfin music client for the desktop",
+  "description": "Siren — Jellyfin music client for desktop and web",
   "author": {
     "name": "Marauder",
     "email": "JasonZ24@outlook.com"
@@ -14,13 +14,11 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "dev:desktop": "node scripts/dev.mjs",
     "build": "npm run build --workspace=@siren/client && npm run build:electron",
     "build:electron": "tsc -p electron/tsconfig.json && node scripts/build-electron.mjs",
     "icons": "electron scripts/gen-icon.cjs",
     "typecheck": "tsc -p electron/tsconfig.json && tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",
     "start": "electron .",
-    "start:desktop": "electron .",
     "start:web": "npm run start --workspace=@siren/server",
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run dist -- --win",

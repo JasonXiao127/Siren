@@ -16,7 +16,7 @@ const router = Router();
 const CLIENT_NAME = 'Siren';
 // Kept in sync with the app version via the SIREN_APP_VERSION esbuild define
 // (see scripts/build-electron.mjs); falls back for standalone runs.
-const CLIENT_VERSION = process.env.SIREN_APP_VERSION || '1.0.0';
+const CLIENT_VERSION = process.env.SIREN_APP_VERSION || '1.1.1';
 
 function buildAuthHeader(deviceId: string): string {
   // Read lazily so bundling can't produce load-order bugs.
@@ -27,12 +27,14 @@ function buildAuthHeader(deviceId: string): string {
 // ---------------------------------------------------------------------------
 // URL validation
 //
-// Siren is a single-user desktop app: the proxy is only reachable from this
-// machine (loopback bind + token header), so the old web-hosting SSRF threat
-// model no longer applies. Users commonly run Jellyfin on localhost or
-// another LAN box, so private/loopback targets are allowed. We keep a minimal
+// Per-target threat model: on desktop the proxy is only reachable from this
+// machine (loopback bind + per-launch token header), single-user. In Docker
+// it is network-reachable and cookie-only, so treat it as web-hosted —
+// except that users self-host Jellyfin on localhost or another LAN box, so
+// private/loopback targets are allowed anyway. Either way we keep a minimal
 // guard: strict http/https protocol and link-local addresses (169.254.0.0/16,
-// fe80::/10) which have no legitimate use here.
+// fe80::/10) which have no legitimate use here. Every redirect hop is
+// re-validated before following.
 // ---------------------------------------------------------------------------
 
 const BLOCKED_IPV4_RE = /^(169\.254\.|0\.)/;

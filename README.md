@@ -88,8 +88,8 @@ client/            React + Vite + Tailwind frontend
 server/            Express API — auth, Jellyfin proxy, sessions
 electron/main.ts   Window, app:// handler, server process
 packaging/         App icons (`npm run icons` to regenerate)
-scripts/           dev.mjs, build-electron.mjs, gen-icon.cjs
-.github/workflows/build.yml  Release builds (win/mac/linux)
+scripts/           dev.mjs, build-electron.mjs, gen-icon.cjs, test-sessions.mjs
+.github/workflows/build.yml  Release builds (win/mac/linux installers + Docker image)
 ```
 
 ## Notes

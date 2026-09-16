@@ -20,8 +20,9 @@ const sessions = new Map<string, Session>();
 // ---------------------------------------------------------------------------
 // Disk persistence
 //
-// Sessions survive app restarts by persisting to a JSON file inside the
-// Electron userData directory (SIREN_DATA_DIR, set by the main process).
+// Sessions survive app restarts by persisting to a JSON file inside
+// SIREN_DATA_DIR (Electron: userData, set by the main process;
+// Docker: /data volume; default ./data, cwd-dependent and ephemeral).
 // Writes are debounced and atomic (tmp + rename); the file holds auth tokens
 // so it is created with mode 0600.
 // ---------------------------------------------------------------------------
