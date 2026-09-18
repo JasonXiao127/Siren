@@ -72,7 +72,7 @@ export default function PlayerBar({ onToggleQueue, queueOpen, onExpand }: Player
         <Artwork
           src={imageUrl}
           alt={currentTrack?.Name || 'No track'}
-          className="h-14 w-14 rounded"
+          className="h-14 w-14 shrink-0 rounded"
           iconClassName="h-5 w-5"
           objectFit="contain"
         />

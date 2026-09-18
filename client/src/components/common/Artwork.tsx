@@ -14,6 +14,14 @@ interface ArtworkProps {
    */
   objectFit?: 'cover' | 'contain';
   /**
+   * How to fill empty space when the image doesn't match the box.
+   * - 'none': current behavior (image alone, bars show through)
+   * - 'matte': uniform `bg-secondary` behind a `contain` image (cheap, good for 40px rows)
+   * - 'blur': same image reused blurred behind a sharp `contain` foreground
+   *   (no crop, no black bars, good for large cards; no extra data needed)
+   */
+  fill?: 'none' | 'matte' | 'blur';
+  /**
    * How the container should size itself relative to the image.
    * - 'square': fixed square box (default, backward compatible)
    * - 'video': fixed 16:9 box
@@ -29,6 +37,7 @@ export function Artwork({
   iconClassName,
   objectFit = 'cover',
   aspectRatio = 'square',
+  fill = 'none',
 }: ArtworkProps) {
   const [error, setError] = useState(false);
   const [naturalRatio, setNaturalRatio] = useState<number | null>(null);
@@ -51,6 +60,51 @@ export function Artwork({
         )}
       >
         <Music className={cn('h-8 w-8 text-muted-foreground', iconClassName)} />
+      </div>
+    );
+  }
+
+  // Blurred fill: uniform box, full image kept sharp on top, same image
+  // blurred behind to fill the bars. No crop, no extra network data.
+  if (fill === 'blur') {
+    return (
+      <div className={cn('relative overflow-hidden bg-secondary', className)}>
+        <img
+          src={src}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-xl"
+          onError={() => setError(true)}
+          loading="lazy"
+        />
+        <img
+          src={src}
+          alt={alt}
+          className="relative h-full w-full object-contain"
+          onError={() => setError(true)}
+          loading="lazy"
+        />
+      </div>
+    );
+  }
+
+  // Matte fill: uniform box with an intentional background behind `contain`.
+  // Cheap (single decode) — for small list thumbs.
+  if (fill === 'matte') {
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-center overflow-hidden bg-secondary/60',
+          className
+        )}
+      >
+        <img
+          src={src}
+          alt={alt}
+          className="h-full w-full object-contain"
+          onError={() => setError(true)}
+          loading="lazy"
+        />
       </div>
     );
   }

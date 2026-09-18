@@ -84,6 +84,7 @@ export default function Albums() {
                     alt={album.Name}
                     className="aspect-square w-full rounded-md"
                     iconClassName="h-10 w-10"
+                    fill="blur"
                   />
                   <div
                     className="absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-primary text-primary-foreground opacity-0 shadow-lg transition-opacity group-hover:opacity-100"

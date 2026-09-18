@@ -187,7 +187,7 @@ function TrackGrid({
                 alt={track.Name}
                 className="aspect-square w-full rounded-md"
                 iconClassName="h-10 w-10"
-                objectFit="contain"
+                fill="blur"
               />
               <div className="absolute bottom-2 right-2 flex h-10 w-10 items-center justify-center rounded-full bg-primary text-primary-foreground opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
                 <Play className="h-5 w-5 fill-current" />
