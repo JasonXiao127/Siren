@@ -18,10 +18,17 @@ const CLIENT_NAME = 'Siren';
 // (see scripts/build-electron.mjs); falls back for standalone runs.
 const CLIENT_VERSION = process.env.SIREN_APP_VERSION || '1.1.1';
 
-function buildAuthHeader(deviceId: string): string {
+// Jellyfin 12 requires the modern `Authorization: MediaBrowser …` header.
+// Legacy methods (X-Emby-Authorization, X-Emby-Token, X-MediaBrowser-Token,
+// api_key) are disabled by default (EnableLegacyAuthorization=false) and will
+// be removed entirely in a future release. This header shape works back to
+// Jellyfin 10.8, but Siren officially targets 12+ only.
+function buildAuthorizationHeader(deviceId: string, token?: string): string {
   // Read lazily so bundling can't produce load-order bugs.
   const deviceName = process.env.SIREN_DEVICE_NAME || 'Siren Desktop';
-  return `MediaBrowser Client="${CLIENT_NAME}", Device="${deviceName}", DeviceId="${deviceId}", Version="${CLIENT_VERSION}"`;
+  const base =
+    `MediaBrowser Client="${CLIENT_NAME}", Device="${deviceName}", DeviceId="${deviceId}", Version="${CLIENT_VERSION}"`;
+  return token ? `${base}, Token="${token}"` : base;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +108,7 @@ router.post(
         {
           headers: {
             'Content-Type': 'application/json',
-            'X-Emby-Authorization': buildAuthHeader(deviceId),
+            'Authorization': buildAuthorizationHeader(deviceId),
           },
           timeout: 10000,
         }
@@ -180,8 +187,7 @@ router.post('/auth/logout', async (req: Request, res: Response) => {
         {},
         {
           headers: {
-            'X-Emby-Token': session.token,
-            'X-Emby-Authorization': buildAuthHeader(session.deviceId),
+            'Authorization': buildAuthorizationHeader(session.deviceId, session.token),
           },
           timeout: 5000,
         }
@@ -238,11 +244,16 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
   const baseUrl = validatedUrl.toString().replace(/\/$/, '') + '/';
   const targetUrl = new URL(targetPath, baseUrl);
 
-  // Sanitize query params: strip any proxy-specific params before forwarding.
-  // (These should never be present anymore, but strip them defensively.)
+  // Sanitize query params: strip any proxy-specific or legacy-auth params
+  // before forwarding. Never forward a token via query — auth travels in the
+  // Authorization header only (query tokens leak into logs/history). Also
+  // strip ApiKey/api_key defensively so a stray param can't cause a
+  // dual-auth 401 on Jellyfin 12+.
   const params = new URLSearchParams(req.query as Record<string, string>);
   params.delete('X-Server-Url');
   params.delete('X-Emby-Token');
+  params.delete('ApiKey');
+  params.delete('api_key');
   targetUrl.search = params.toString();
 
   // Follow upstream redirects manually (bounded), re-validating every hop with
@@ -272,8 +283,7 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
           maxRedirects: 0,
           signal: controller.signal,
           headers: {
-            'X-Emby-Token': token,
-            'X-Emby-Authorization': buildAuthHeader(deviceId),
+            'Authorization': buildAuthorizationHeader(deviceId, token),
             ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}),
             ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {}),
           },

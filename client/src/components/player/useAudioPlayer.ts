@@ -1,7 +1,16 @@
 import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 import { usePlayerStore } from '@/store/playerStore';
-import { buildAudioUrl } from '@/api/jellyfin';
+import { useAuthStore } from '@/store/authStore';
+import {
+  buildAudioUrl,
+  reportPlaybackStart,
+  reportPlaybackProgress,
+  reportPlaybackStopped,
+  secondsToTicks,
+  toJellyfinRepeatMode,
+  type PlaybackReportInfo,
+} from '@/api/jellyfin';
 
 // ---------------------------------------------------------------------------
 // Shared audio singleton.
@@ -39,6 +48,69 @@ function subscribeToState(listener: () => void) {
 // feedback loop with the store's isPlaying state.
 let playIntent = false;
 
+// ---------------------------------------------------------------------------
+// Jellyfin playback reporting.
+//
+// One PlaySessionId per track playback, reported via the modern
+// ReportPlaybackStart/Progress/Stopped endpoints so play counts,
+// recently-played ordering, resume state, and the dashboard "Now Playing"
+// indicator stay accurate. Every report is fire-and-forget and resolves
+// silently on failure — reporting must never interrupt audio.
+// ---------------------------------------------------------------------------
+
+let playSessionId: string | null = null;
+let lastProgressReportAt = 0;
+const PROGRESS_INTERVAL_MS = 15000;
+
+function newPlaySessionId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fall through to the Math.random fallback below.
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function currentReportInfo(
+  trackId: string,
+  positionSeconds: number,
+  extra?: { isPaused?: boolean }
+): PlaybackReportInfo | null {
+  // No session (logged out, or nothing playing) — nothing to report.
+  if (!useAuthStore.getState().userId || !playSessionId) return null;
+  const { volume, repeatMode } = usePlayerStore.getState();
+  return {
+    itemId: trackId,
+    playSessionId,
+    positionTicks: secondsToTicks(positionSeconds),
+    volumeLevel: Math.round(volume * 100),
+    isMuted: muted,
+    repeatMode: toJellyfinRepeatMode(repeatMode),
+    ...extra,
+  };
+}
+
+/**
+ * Reports playback-stopped for whatever track the element currently holds
+ * and retires its PlaySessionId. Also clears the "current" marker so a
+ * subsequent loadTrack() always performs a fresh load.
+ */
+function stopPreviousPlayback(audio: HTMLAudioElement): void {
+  const previousId = audio.dataset.currentTrackId;
+  audio.dataset.currentTrackId = '';
+  if (previousId && playSessionId) {
+    const info = currentReportInfo(previousId, currentTime);
+    if (info) void reportPlaybackStopped(info);
+  }
+  playSessionId = null;
+}
+
 function getSharedAudio(): HTMLAudioElement {
   if (!sharedAudio) {
     sharedAudio = new Audio();
@@ -70,6 +142,13 @@ function loadTrack(audio: HTMLAudioElement) {
   const { queue, currentIndex, setPlaying } = usePlayerStore.getState();
   const track = queue[currentIndex];
 
+  // Skip reloading if this is already the loaded track (e.g. queue reorder,
+  // remove-from-queue, or clicking the same track again).
+  if (track && audio.dataset.currentTrackId === track.Id) return;
+
+  // Retire the previous session (reports stopped) before starting the next.
+  stopPreviousPlayback(audio);
+
   if (!track) {
     // Queue cleared / no current track — stop whatever is playing.
     playIntent = false;
@@ -79,10 +158,6 @@ function loadTrack(audio: HTMLAudioElement) {
     return;
   }
 
-  // Skip reloading if this is already the loaded track (e.g. queue reorder,
-  // remove-from-queue, or clicking the same track again).
-  if (audio.dataset.currentTrackId === track.Id) return;
-
   const url = buildAudioUrl(track.Id);
 
   // Explicit track-change sequence to avoid stale states
@@ -91,6 +166,10 @@ function loadTrack(audio: HTMLAudioElement) {
   audio.load();
   audio.src = url;
   audio.dataset.currentTrackId = track.Id;
+  playSessionId = newPlaySessionId();
+  lastProgressReportAt = Date.now();
+  const startInfo = currentReportInfo(track.Id, 0, { isPaused: false });
+  if (startInfo) void reportPlaybackStart(startInfo);
   playIntent = true;
   audio.play().catch(() => {
     // Autoplay may be blocked; user will need to click play
@@ -103,6 +182,17 @@ function attachAudioListeners(audio: HTMLAudioElement) {
   audio.addEventListener('timeupdate', () => {
     if (isSeeking) return;
     currentTime = audio.currentTime;
+    // Throttled progress reports keep the dashboard position fresh without
+    // spamming the server on every frame.
+    const now = Date.now();
+    if (playIntent && now - lastProgressReportAt >= PROGRESS_INTERVAL_MS) {
+      lastProgressReportAt = now;
+      const id = audio.dataset.currentTrackId;
+      if (id) {
+        const info = currentReportInfo(id, currentTime, { isPaused: false });
+        if (info) void reportPlaybackProgress(info);
+      }
+    }
     emitState();
   });
 
@@ -120,10 +210,11 @@ function attachAudioListeners(audio: HTMLAudioElement) {
       return;
     }
 
-    // Clear the "current" marker before advancing so the track-change
-    // subscription forces a fresh reload even if the queue lands back on
-    // the same track (e.g. repeat-all with a single-track queue).
-    audio.dataset.currentTrackId = '';
+    // Natural track end completes the session server-side (play counts,
+    // resume). stopPreviousPlayback also clears the "current" marker so the
+    // track-change subscription forces a fresh reload even if the queue lands
+    // back on the same track (e.g. repeat-all with a single-track queue).
+    stopPreviousPlayback(audio);
     next();
   });
 
@@ -132,6 +223,8 @@ function attachAudioListeners(audio: HTMLAudioElement) {
   let consecutiveErrors = 0;
   audio.addEventListener('error', () => {
     consecutiveErrors += 1;
+    // Retire the failed session before advancing so it isn't left dangling.
+    stopPreviousPlayback(audio);
     const { setPlaying, next } = usePlayerStore.getState();
     if (consecutiveErrors >= 3) {
       toast.error('Multiple tracks failed to play — stopping');
@@ -157,7 +250,17 @@ function attachAudioListeners(audio: HTMLAudioElement) {
     if (playIntent) usePlayerStore.getState().setPlaying(true);
   });
   audio.addEventListener('pause', () => {
-    if (!playIntent) usePlayerStore.getState().setPlaying(false);
+    if (!playIntent) {
+      usePlayerStore.getState().setPlaying(false);
+      // timeupdate stops firing while paused, so report the paused position
+      // explicitly (no-op when nothing is loaded — marker is empty then).
+      const id = audio.dataset.currentTrackId;
+      if (id) {
+        lastProgressReportAt = Date.now();
+        const info = currentReportInfo(id, audio.currentTime, { isPaused: true });
+        if (info) void reportPlaybackProgress(info);
+      }
+    }
   });
 }
 
@@ -299,6 +402,14 @@ export function useAudioPlayer() {
 
   const endSeek = useCallback(() => {
     isSeeking = false;
+    // A seek invalidates the server's last known position — report it
+    // immediately rather than waiting for the next throttled tick.
+    const id = getSharedAudio().dataset.currentTrackId;
+    if (id && playSessionId) {
+      lastProgressReportAt = Date.now();
+      const info = currentReportInfo(id, currentTime, { isPaused: !playIntent });
+      if (info) void reportPlaybackProgress(info);
+    }
     emitState();
   }, []);
 

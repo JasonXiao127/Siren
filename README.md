@@ -15,6 +15,14 @@ Installers are built on every `v*` tag — see [Releases](../../releases):
 Builds are unsigned. On Windows click "More info" → "Run anyway". On macOS
 right-click → Open, or allow it under Privacy & Security.
 
+## Requirements
+
+- Jellyfin **12+** is required. Jellyfin 10.11 is not officially supported:
+  it is untested and may stop working at any time — if it breaks, it breaks.
+- After upgrading your Jellyfin server to 12, run a **full library scan**
+  from the dashboard (required by the Jellyfin 12 upgrade itself before
+  artists and artwork settle).
+
 ## Development
 
 ```bash

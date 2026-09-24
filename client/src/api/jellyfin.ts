@@ -91,8 +91,11 @@ export async function logout(): Promise<void> {
 // --- Data fetching ---
 
 export async function getPlaylists(userId: string): Promise<JellyfinItem[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  // Canonical Jellyfin 12 path: GET /Items?userId=… (the
+  // /Users/{id}/Items form is legacy-only and hidden from the spec).
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       IncludeItemTypes: 'Playlist',
       // Without Recursive, Jellyfin ignores IncludeItemTypes on this endpoint
       // and returns top-level library folders (Movies, TV Shows, Music, ...)
@@ -109,8 +112,9 @@ export async function getPlaylistTracks(userId: string, playlistId: string): Pro
 }
 
 export async function getRecentlyAdded(userId: string): Promise<Track[]> {
-  const response = await apiClient.get<JellyfinItem[]>('/proxy/Users/' + userId + '/Items/Latest', {
+  const response = await apiClient.get<JellyfinItem[]>('/proxy/Items/Latest', {
     params: {
+      userId,
       IncludeItemTypes: 'Audio',
       Limit: 24,
       Fields: 'PrimaryImageAspectRatio,DateCreated',
@@ -120,8 +124,9 @@ export async function getRecentlyAdded(userId: string): Promise<Track[]> {
 }
 
 export async function getAlbums(userId: string): Promise<JellyfinItem[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       IncludeItemTypes: 'MusicAlbum',
       Recursive: true,
       SortBy: 'SortName',
@@ -133,8 +138,9 @@ export async function getAlbums(userId: string): Promise<JellyfinItem[]> {
 }
 
 export async function getFavorites(userId: string): Promise<Track[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       Filters: 'IsFavorite',
       IncludeItemTypes: 'Audio',
       Recursive: true,
@@ -152,15 +158,21 @@ export async function setFavorite(
   isFavorite: boolean
 ): Promise<void> {
   if (isFavorite) {
-    await apiClient.post(`/proxy/Users/${userId}/FavoriteItems/${itemId}`);
+    // Canonical Jellyfin 12 path (the /Users/{id}/FavoriteItems form is legacy).
+    await apiClient.post(`/proxy/UserFavoriteItems/${itemId}`, null, {
+      params: { userId },
+    });
   } else {
-    await apiClient.delete(`/proxy/Users/${userId}/FavoriteItems/${itemId}`);
+    await apiClient.delete(`/proxy/UserFavoriteItems/${itemId}`, {
+      params: { userId },
+    });
   }
 }
 
 export async function getRecentlyPlayed(userId: string): Promise<Track[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       IncludeItemTypes: 'Audio',
       Recursive: true,
       SortBy: 'DatePlayed',
@@ -173,8 +185,9 @@ export async function getRecentlyPlayed(userId: string): Promise<Track[]> {
 }
 
 export async function getFrequentlyPlayed(userId: string): Promise<Track[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       IncludeItemTypes: 'Audio',
       Recursive: true,
       SortBy: 'PlayCount',
@@ -253,9 +266,13 @@ export async function removeTracksFromPlaylist(
 }
 
 export async function getArtists(userId: string): Promise<JellyfinArtist[]> {
-  const response = await apiClient.get<JellyfinArtistsResponse>('/proxy/Artists', {
+  // Jellyfin 12 marks GET /Artists obsolete ("Use GetPersons") — it still
+  // works, but Persons is the canonical path. PersonType values cover both
+  // solo artists and album artists; the response shape ({Items}) is the same.
+  const response = await apiClient.get<JellyfinArtistsResponse>('/proxy/Persons', {
     params: {
-      UserId: userId,
+      userId,
+      personTypes: 'Artist,AlbumArtist',
       Limit: 200,
     },
   });
@@ -263,8 +280,9 @@ export async function getArtists(userId: string): Promise<JellyfinArtist[]> {
 }
 
 export async function searchMusic(userId: string, query: string): Promise<JellyfinItem[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       searchTerm: query,
       IncludeItemTypes: 'Audio,MusicAlbum',
       Recursive: true,
@@ -279,8 +297,9 @@ export async function getAlbumTracks(userId: string, albumId: string): Promise<T
 }
 
 export async function getArtistAlbums(userId: string, artistId: string): Promise<JellyfinItem[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       ArtistIds: artistId,
       IncludeItemTypes: 'MusicAlbum',
       Recursive: true,
@@ -292,7 +311,9 @@ export async function getArtistAlbums(userId: string, artistId: string): Promise
 }
 
 export async function getItem(userId: string, itemId: string): Promise<JellyfinItem> {
-  const response = await apiClient.get<JellyfinItem>(`/proxy/Users/${userId}/Items/${itemId}`);
+  const response = await apiClient.get<JellyfinItem>(`/proxy/Items/${itemId}`, {
+    params: { userId },
+  });
   return response.data;
 }
 
@@ -301,8 +322,9 @@ export async function getItem(userId: string, itemId: string): Promise<JellyfinI
  * sorted by track number.
  */
 async function getChildTracks(userId: string, parentId: string): Promise<Track[]> {
-  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Users/' + userId + '/Items', {
+  const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
+      userId,
       ParentId: parentId,
       IncludeItemTypes: 'Audio',
       SortBy: 'IndexNumber',
@@ -313,6 +335,87 @@ async function getChildTracks(userId: string, parentId: string): Promise<Track[]
     },
   });
   return toArray<Track>(response.data?.Items);
+}
+
+// --- Playback reporting ---
+//
+// Uses the modern ReportPlayback* endpoints (POST body). The legacy
+// OnPlayback* query-param endpoints are deprecated and hidden from the
+// Jellyfin 12 spec. Reporting drives play counts, recently-played ordering,
+// resume state, and the dashboard "Now Playing" indicator.
+//
+// All helpers are fire-and-forget safe: failures resolve silently so a
+// reporting hiccup can never interrupt audio playback.
+
+export type JellyfinRepeatMode = 'RepeatNone' | 'RepeatAll' | 'RepeatOne';
+
+export interface PlaybackReportInfo {
+  itemId: string;
+  playSessionId: string;
+  positionTicks?: number;
+  isPaused?: boolean;
+  isMuted?: boolean;
+  volumeLevel?: number;
+  repeatMode?: JellyfinRepeatMode;
+}
+
+/** Converts player seconds to Jellyfin ticks (10^7 per second). */
+export function secondsToTicks(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds < 0) return 0;
+  return Math.floor(seconds * 10_000_000);
+}
+
+/** Maps the player store repeat mode to the Jellyfin enum. */
+export function toJellyfinRepeatMode(mode: string): JellyfinRepeatMode {
+  if (mode === 'all') return 'RepeatAll';
+  if (mode === 'one') return 'RepeatOne';
+  return 'RepeatNone';
+}
+
+async function postPlaybackReport(path: string, body: Record<string, unknown>): Promise<void> {
+  try {
+    await apiClient.post(`/proxy${path}`, body);
+  } catch {
+    // Reporting must never break playback — swallow errors silently.
+    // (Auth failures still surface via the shared 401 interceptor.)
+  }
+}
+
+function playbackBody(info: PlaybackReportInfo): Record<string, unknown> {
+  return {
+    ItemId: info.itemId,
+    MediaSourceId: info.itemId,
+    PlaySessionId: info.playSessionId,
+    // Universal audio may direct-play or transcode server-side; the server
+    // downgrades a phantom Transcode claim automatically, so DirectPlay is
+    // the honest client-side default.
+    PlayMethod: 'DirectPlay',
+    CanSeek: true,
+    ...(info.positionTicks !== undefined ? { PositionTicks: info.positionTicks } : {}),
+    ...(info.isPaused !== undefined ? { IsPaused: info.isPaused } : {}),
+    ...(info.isMuted !== undefined ? { IsMuted: info.isMuted } : {}),
+    ...(info.volumeLevel !== undefined ? { VolumeLevel: info.volumeLevel } : {}),
+    ...(info.repeatMode ? { RepeatMode: info.repeatMode } : {}),
+  };
+}
+
+export function reportPlaybackStart(info: PlaybackReportInfo): Promise<void> {
+  return postPlaybackReport('/Sessions/Playing', playbackBody(info));
+}
+
+export function reportPlaybackProgress(info: PlaybackReportInfo): Promise<void> {
+  return postPlaybackReport('/Sessions/Playing/Progress', playbackBody(info));
+}
+
+export function reportPlaybackStopped(
+  info: Pick<PlaybackReportInfo, 'itemId' | 'playSessionId' | 'positionTicks'>
+): Promise<void> {
+  return postPlaybackReport('/Sessions/Playing/Stopped', {
+    ItemId: info.itemId,
+    MediaSourceId: info.itemId,
+    PlaySessionId: info.playSessionId,
+    ...(info.positionTicks !== undefined ? { PositionTicks: info.positionTicks } : {}),
+  });
 }
 
 // --- Media URL builders ---
