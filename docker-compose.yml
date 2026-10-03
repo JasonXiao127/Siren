@@ -13,6 +13,10 @@ services:
       - HOST=0.0.0.0
       - NODE_ENV=production
       - SIREN_DATA_DIR=/data
+      # Trust the reverse-proxy hop count so rate-limit IPs and req.secure
+      # (Secure cookies) are correct. Set to 1 behind Caddy/Nginx/Traefik,
+      # leave 0 for direct exposure.
+      - TRUST_PROXY=${TRUST_PROXY:-0}
       # Subpath mount (e.g. /siren) — must match the image's BASE_PATH build
       # arg. For the default root image leave as /. To serve under /siren,
       # rebuild with `docker compose build --build-arg BASE_PATH=/siren` and

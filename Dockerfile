@@ -41,18 +41,18 @@ ENV BASE_PATH=${BASE_PATH}
 # NOTE: SIREN_TOKEN is Electron-only — never set it here. Docker relies on the
 # session cookie; setting SIREN_TOKEN would 403 every browser /api call.
 
+# Copy manifests + lockfile, then install ONLY production deps.
+# Manifests first so source changes don't invalidate the npm layer.
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/package-lock.json ./package-lock.json
+COPY --from=builder /app/server/package.json ./server/package.json
+RUN npm ci --omit=dev --workspace=@siren/server
+
 # Copy compiled backend
 COPY --from=builder /app/server/dist ./dist
 
 # Copy built frontend static files
 COPY --from=builder /app/client/dist ./client/dist
-
-# Copy manifests + lockfile, then install ONLY production deps
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/package-lock.json ./package-lock.json
-COPY --from=builder /app/server/package.json ./server/package.json
-COPY --from=builder /app/client/package.json ./client/package.json
-RUN npm ci --omit=dev
 
 # Create non-root user and writable data dir for file-backed sessions
 RUN addgroup -S siren && adduser -S siren -G siren && mkdir -p /data && chown siren:siren /data

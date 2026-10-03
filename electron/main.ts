@@ -67,6 +67,7 @@ const MAX_RESPAWN_ATTEMPTS = 5;
 let respawnAttempts = 0;
 let healthySince = 0;
 let respawnScheduled = false;
+let respawnTimer: NodeJS.Timeout | null = null;
 
 function scheduleRespawn(): void {
   if (quitting || respawnScheduled) return;
@@ -87,7 +88,8 @@ function scheduleRespawn(): void {
   console.error(
     `[siren] Respawning server (attempt ${respawnAttempts}/${MAX_RESPAWN_ATTEMPTS}) in ${delay}ms`
   );
-  setTimeout(() => {
+  respawnTimer = setTimeout(() => {
+    respawnTimer = null;
     respawnScheduled = false;
     if (!quitting) {
       startServerChild().catch((err) => {
@@ -101,7 +103,26 @@ function scheduleRespawn(): void {
 
 function startServerChild(): Promise<number> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let readyReceived = false;
+    const settleResolve = (port: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(port);
+    };
+    const settleReject = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    };
     serverToken = crypto.randomBytes(24).toString('hex');
+    if (!IS_DEV) {
+      console.log('[siren] Loopback token enabled for Electron server');
+    } else {
+      console.warn('[siren] Dev mode: SIREN_TOKEN disabled, loopback API open to local processes');
+    }
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       NODE_ENV: IS_DEV ? 'development' : 'production',
@@ -115,7 +136,7 @@ function startServerChild(): Promise<number> {
     };
 
     const timer = setTimeout(() => {
-      reject(new Error('[siren] Server process failed to report ready within 10s'));
+      settleReject(new Error('[siren] Server process failed to report ready within 10s'));
       // Kill the stuck child; its exit handler schedules the next attempt.
       try {
         serverProcess?.kill();
@@ -124,28 +145,51 @@ function startServerChild(): Promise<number> {
       }
     }, 10000);
 
-    serverProcess = utilityProcess.fork(path.join(__dirname, 'server.cjs'), [], {
-      env,
-      serviceName: 'siren-server',
-    });
+    try {
+      serverProcess = utilityProcess.fork(path.join(__dirname, 'server.cjs'), [], {
+        env,
+        serviceName: 'siren-server',
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      settleReject(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+
+    (serverProcess as unknown as NodeJS.EventEmitter).on(
+      'error',
+      (type: string, location?: string, report?: string) => {
+        settleReject(new Error(`[siren] Server process error (${type})${location ? ` at ${location}` : ''}${report ? `: ${report}` : ''}`));
+      }
+    );
 
     serverProcess.on('message', (msg: { type?: string; port?: number }) => {
       if (msg?.type === 'ready' && typeof msg.port === 'number') {
-        clearTimeout(timer);
+        readyReceived = true;
         serverPort = msg.port;
         healthySince = Date.now();
         respawnAttempts = 0;
-        resolve(msg.port);
+        settleResolve(msg.port);
       }
     });
 
     serverProcess.on('exit', (code) => {
-      clearTimeout(timer);
       const wasHealthy = healthySince > 0 && Date.now() - healthySince > 60_000;
       serverPort = null;
       serverProcess = null;
+      // Reset for the next attempt so hadReady/wasHealthy are per-child,
+      // not cross-generational.
+      healthySince = 0;
+
+      // Fast exit before first ready: settle the boot promise so
+      // app.whenReady doesn't hang forever with no window. Don't respawn
+      // here — the initial-await catch shows the dialog and exits; respawn
+      // is for post-ready crashes only. Per-attempt flag, not global.
+      const hadReady = readyReceived;
+      settleReject(new Error(`[siren] Server exited before ready (code ${code})`));
 
       if (quitting) return;
+      if (!hadReady) return;
 
       // Unexpected death — respawn with backoff so a transient crash
       // doesn't take the whole app down.
@@ -191,12 +235,25 @@ async function doForward(request: Request): Promise<Response> {
   }
 
   const url = new URL(request.url);
+  // Only serve our own origin through the loopback bridge. fetch('app://evil')
+  // from a compromised renderer must not reach the token-guarded server.
+  if (url.host !== 'siren') {
+    return new Response(JSON.stringify({ error: 'Not found' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const headers = new Headers();
   const FORWARD_REQUEST_HEADERS = [
     'accept',
     'accept-language',
     'content-type',
+    'cookie',
     'range',
+    'if-none-match',
+    'if-modified-since',
+    'if-range',
+    'cache-control',
     'user-agent',
   ];
   for (const name of FORWARD_REQUEST_HEADERS) {
@@ -231,6 +288,7 @@ async function doForward(request: Request): Promise<Response> {
     'upgrade',
     'proxy-authenticate',
     'proxy-authorization',
+    'proxy-connection',
     'te',
     'trailer',
     'content-encoding',
@@ -244,7 +302,15 @@ async function doForward(request: Request): Promise<Response> {
   upstream.headers.forEach((value, key) => {
     if (!STRIP_RESPONSE_HEADERS.has(key.toLowerCase())) responseHeaders.set(key, value);
   });
-  for (const cookie of upstream.headers.getSetCookie()) {
+  const getSetCookie =
+    typeof upstream.headers.getSetCookie === 'function'
+      ? () => upstream.headers.getSetCookie()
+      : () => {
+          // Older Electron: split the merged Set-Cookie manually.
+          const raw = upstream.headers.get('set-cookie');
+          return raw ? [raw] : [];
+        };
+  for (const cookie of getSetCookie()) {
     responseHeaders.append('set-cookie', cookie);
   }
 
@@ -270,18 +336,42 @@ function sameOrigin(a: string, b: string): boolean {
 function registerNavigationGuards(win: BrowserWindow): void {
   const allowedOrigin = IS_DEV ? DEV_SERVER_URL : APP_ORIGIN;
 
+  const guardUrl = (url: string): boolean => {
+    if (sameOrigin(url, allowedOrigin)) return true;
+    return false;
+  };
+
   // window.location = <external> navigates the app window away — intercept
   // and open externally instead. Same-origin navigation (e.g. the 401
   // interceptor's redirect to /login) passes through untouched. Compare
   // parsed hosts, NOT string prefixes (a startsWith check would admit
   // http://localhost:9999.evil.com).
-  win.webContents.on('will-navigate', (event, url) => {
-    if (sameOrigin(url, allowedOrigin)) return;
-    event.preventDefault();
+  const handleExternal = (url: string): void => {
     if (/^https?:/i.test(url)) {
       shell.openExternal(url);
     }
+  };
+  win.webContents.on('will-navigate', (event, url) => {
+    if (guardUrl(url)) return;
+    event.preventDefault();
+    handleExternal(url);
   });
+  // Server redirects and iframe navigations bypass will-navigate.
+  win.webContents.on('will-redirect', (event, url) => {
+    if (guardUrl(url)) return;
+    event.preventDefault();
+    handleExternal(url);
+  });
+  // Frame navigations (iframes) bypass will-navigate on some versions.
+  // Electron 43 types this as details-only (no positional url arg).
+  (win.webContents as unknown as NodeJS.EventEmitter).on(
+    'will-frame-navigate',
+    (details: { url: string; preventDefault: () => void }) => {
+      if (guardUrl(details.url)) return;
+      details.preventDefault();
+      handleExternal(details.url);
+    }
+  );
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) {
@@ -432,10 +522,20 @@ if (!gotLock) {
   // Graceful shutdown: give the server child time to flush sessions and
   // close cleanly before we exit. Force-exits after 3s in case it hangs.
   app.on('before-quit', (event) => {
-    if (quitting || !serverProcess) return;
     quitting = true;
+    if (respawnTimer) {
+      clearTimeout(respawnTimer);
+      respawnTimer = null;
+      respawnScheduled = false;
+    }
+    if (!serverProcess) return;
     event.preventDefault();
-    serverProcess.postMessage({ type: 'quit' });
+    try {
+      serverProcess.postMessage({ type: 'quit' });
+    } catch {
+      app.exit(0);
+      return;
+    }
     const forceExit = setTimeout(() => app.exit(0), 3000);
     serverProcess.once('exit', () => {
       clearTimeout(forceExit);

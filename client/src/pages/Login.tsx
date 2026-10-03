@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,6 +18,7 @@ function isValidServerUrl(value: string): boolean {
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const login = useAuthStore((state) => state.login);
   const deviceId = useAuthStore((state) => state.deviceId);
 
@@ -39,7 +40,8 @@ export default function Login() {
     try {
       const result = await apiLogin(serverUrl, username, password, deviceId);
       login(result.serverUrl, result.user.id, result.user);
-      navigate('/');
+      const next = searchParams.get('next');
+      navigate(next && next.startsWith('/') && !next.startsWith('//') ? next : '/', { replace: true });
     } catch (error) {
       const message =
         (error as { response?: { data?: { error?: string } } })?.response?.data?.error ||

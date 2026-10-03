@@ -1,4 +1,4 @@
-import { Router, Request, Response, raw, json } from 'express';
+import { Router, Request, Response, NextFunction, raw, json } from 'express';
 import axios, { AxiosError, AxiosResponse } from 'axios';
 import rateLimit from 'express-rate-limit';
 import { LoginRequest, JellyfinAuthResponse, LoginSuccessResponse } from './types';
@@ -16,19 +16,27 @@ const router = Router();
 const CLIENT_NAME = 'Siren';
 // Kept in sync with the app version via the SIREN_APP_VERSION esbuild define
 // (see scripts/build-electron.mjs); falls back for standalone runs.
-const CLIENT_VERSION = process.env.SIREN_APP_VERSION || '1.1.1';
+const CLIENT_VERSION_RAW = process.env.SIREN_APP_VERSION || '1.1.1';
 
 // Jellyfin 12 requires the modern `Authorization: MediaBrowser …` header.
 // Legacy methods (X-Emby-Authorization, X-Emby-Token, X-MediaBrowser-Token,
 // api_key) are disabled by default (EnableLegacyAuthorization=false) and will
 // be removed entirely in a future release. This header shape works back to
 // Jellyfin 10.8, but Siren officially targets 12+ only.
+function sanitizeHeaderValue(value: string, maxLen = 64): string {
+  return value.replace(/["\r\n,]/g, '').slice(0, maxLen);
+}
+
+const DEVICE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 function buildAuthorizationHeader(deviceId: string, token?: string): string {
   // Read lazily so bundling can't produce load-order bugs.
-  const deviceName = process.env.SIREN_DEVICE_NAME || 'Siren Desktop';
+  const deviceName = sanitizeHeaderValue(process.env.SIREN_DEVICE_NAME || 'Siren Desktop');
+  const safeDeviceId = sanitizeHeaderValue(deviceId);
+  const safeVersion = sanitizeHeaderValue(CLIENT_VERSION_RAW, 32);
   const base =
-    `MediaBrowser Client="${CLIENT_NAME}", Device="${deviceName}", DeviceId="${deviceId}", Version="${CLIENT_VERSION}"`;
-  return token ? `${base}, Token="${token}"` : base;
+    `MediaBrowser Client="${CLIENT_NAME}", Device="${deviceName}", DeviceId="${safeDeviceId}", Version="${safeVersion}"`;
+  return token ? `${base}, Token="${sanitizeHeaderValue(token, 256)}"` : base;
 }
 
 // ---------------------------------------------------------------------------
@@ -46,17 +54,37 @@ function buildAuthorizationHeader(deviceId: string, token?: string): string {
 
 const BLOCKED_IPV4_RE = /^(169\.254\.|0\.)/;
 
+/** Same host:port and same scheme, or an http→https upgrade (never downgrade). */
+function isSameOriginOrUpgrade(base: URL, next: URL): boolean {
+  if (base.host !== next.host) return false;
+  if (base.protocol === next.protocol) return true;
+  return base.protocol === 'http:' && next.protocol === 'https:';
+}
+
 function validateServerUrl(serverUrl: string): URL | null {
   try {
     const url = new URL(serverUrl);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return null;
     }
-    const hostname = url.hostname.toLowerCase();
-    if (BLOCKED_IPV4_RE.test(hostname)) {
+    // Reject embedded credentials — they would persist into session.serverUrl
+    // and be sent to axios on every proxied request.
+    if (url.username || url.password) {
       return null;
     }
-    if (hostname.startsWith('fe80:')) {
+    // Node's URL.hostname retains brackets for IPv6 literals ([fe80::1]).
+    // Strip them for the link-local check, and enforce the full fe80::/10
+    // range (fe80–febf), not just the fe80: prefix.
+    const rawHost = url.hostname.toLowerCase();
+    const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
+    if (BLOCKED_IPV4_RE.test(host)) {
+      return null;
+    }
+    // Bare "0" (→ 0.0.0.0) doesn't match /^0\./ but dials the wildcard.
+    if (host === '0' || host === '0.0.0.0') {
+      return null;
+    }
+    if (/^(fe[89ab][0-9a-f]*:)/.test(host)) {
       return null;
     }
     return url;
@@ -91,6 +119,10 @@ router.post(
 
     if (!serverUrl || !username || !password || !deviceId) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    if (typeof deviceId !== 'string' || !DEVICE_ID_RE.test(deviceId)) {
+      return res.status(400).json({ error: 'Invalid device ID' });
     }
 
     const validatedUrl = validateServerUrl(serverUrl);
@@ -129,18 +161,35 @@ router.post(
         return res.status(502).json({ error: 'Unexpected response from Jellyfin server' });
       }
 
-      const session = createSession({
+      const { session, replaced } = createSession({
         serverUrl: validatedUrl.toString().replace(/\/$/, ''),
         token: data.AccessToken,
         deviceId,
         userId: data.User.Id,
         userName: data.User.Name,
       });
+      // Revoke orphaned Jellyfin tokens from replaced/LRU-evicted rows so
+      // re-login doesn't leave live tokens until Jellyfin-side expiry.
+      // Best-effort, don't block login.
+      for (const old of replaced) {
+        void axios
+          .post(
+            `${old.serverUrl}/Sessions/Logout`,
+            {},
+            {
+              headers: { Authorization: buildAuthorizationHeader(old.deviceId, old.token) },
+              timeout: 5000,
+            }
+          )
+          .catch(() => undefined);
+      }
 
       // The renderer reaches us exclusively via the loopback server behind
       // the app:// protocol handler — there is no TLS hop to protect, and a
       // Secure flag risks rejection by the cookie jar on the custom scheme.
-      res.cookie(SESSION_COOKIE_NAME, session.id, cookieOptions(false));
+      // Behind a TLS-terminating proxy req.secure is true (requires TRUST_PROXY),
+      // so the cookie gets Secure there automatically.
+      res.cookie(SESSION_COOKIE_NAME, session.id, cookieOptions(req.secure === true));
 
       const result: LoginSuccessResponse = {
         user: {
@@ -161,7 +210,9 @@ router.post(
         if (status === 404) {
           return res.status(404).json({ error: 'Server not found — check the URL' });
         }
-        return res.status(status).json({ error: `Jellyfin server error (${status})` });
+        // Don't reflect arbitrary upstream statuses (may leak internals);
+        // normalize to a generic bad-gateway.
+        return res.status(502).json({ error: 'Jellyfin server error — please try again' });
       }
       if (axiosError.code === 'ECONNABORTED') {
         return res.status(504).json({ error: 'Server unreachable — check the URL and try again' });
@@ -170,6 +221,19 @@ router.post(
     }
   }
 );
+
+// GET /api/auth/session — boot probe: validates the httpOnly cookie without
+// exposing the token. Lets the client gate ProtectedLayout on the real
+// server session instead of localStorage alone (avoids authed-UI flash).
+router.get('/auth/session', (req: Request, res: Response) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionId = cookies[SESSION_COOKIE_NAME];
+  const session = sessionId ? getSession(sessionId) : null;
+  if (!session) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+  return res.json({ user: { id: session.userId, name: session.userName }, serverUrl: session.serverUrl });
+});
 
 // POST /api/auth/logout
 router.post('/auth/logout', async (req: Request, res: Response) => {
@@ -198,7 +262,7 @@ router.post('/auth/logout', async (req: Request, res: Response) => {
     deleteSession(session.id);
   }
 
-  res.clearCookie(SESSION_COOKIE_NAME, cookieOptions(false));
+  res.clearCookie(SESSION_COOKIE_NAME, cookieOptions(req.secure === true));
   res.json({ ok: true });
 });
 
@@ -214,7 +278,26 @@ function destroyStream(data: unknown): void {
 }
 
 // ALL /api/proxy/:path(.*)?
-router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req: Request, res: Response) => {
+const PROXY_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+// Cheap pre-parse auth gate: raw() would buffer up to 10mb before the
+// handler runs, so reject anonymous callers first to avoid unauthenticated
+// resource burn. Full session validation stays in-handler.
+function proxyPreAuth(req: Request, res: Response, next: NextFunction): void {
+  const sessionId = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME];
+  if (!sessionId) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return;
+  }
+  next();
+}
+router.all(
+  '/proxy/:path(.*)?',
+  proxyPreAuth,
+  raw({ type: '*/*', limit: '10mb' }),
+  async (req: Request, res: Response) => {
+  if (!PROXY_METHODS.has(req.method)) {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
   // Resolve auth from the server-side session cookie ONLY. Never from query
   // params — that would leak the Jellyfin token into URLs, browser history,
   // and access logs.
@@ -233,32 +316,58 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
   const pathStr = Array.isArray(rawPath) ? rawPath.join('/') : (rawPath || '');
   const targetPath = pathStr.replace(/^\//, '');
 
+  if (!targetPath) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
   const validatedUrl = validateServerUrl(serverUrl);
   if (!validatedUrl) {
     return res.status(403).json({ error: 'Forbidden: invalid or blocked server URL' });
   }
+  const serverBasePath = validatedUrl.pathname.replace(/\/$/, '');
 
   // Build target URL safely, preserving any base path of the server URL.
   // new URL(path, base) treats the base's final segment as a file, so a
   // server at https://host/jellyfin must resolve to https://host/jellyfin/Items/...
   const baseUrl = validatedUrl.toString().replace(/\/$/, '') + '/';
   const targetUrl = new URL(targetPath, baseUrl);
+  // Pin the initial target to the Jellyfin origin: an absolute-URL targetPath
+  // (https://evil/x, //evil/x) would otherwise discard baseUrl per WHATWG
+  // and exfiltrate the Jellyfin token to an attacker host. Same check as
+  // redirects below. Also reject embedded credentials in the resolved URL.
+  // Allow http→https upgrades on the same host:port (common Jellyfin setup),
+  // never https→http downgrades.
+  if (!isSameOriginOrUpgrade(validatedUrl, targetUrl)) {
+    return res.status(403).json({ error: 'Forbidden: invalid request path' });
+  }
+  if (targetUrl.username || targetUrl.password) {
+    return res.status(403).json({ error: 'Forbidden: invalid request path' });
+  }
+  // Prevent subpath escape (e.g. ../x escaping a /jellyfin base).
+  if (serverBasePath && !targetUrl.pathname.startsWith(serverBasePath + '/') && targetUrl.pathname !== serverBasePath) {
+    return res.status(403).json({ error: 'Forbidden: invalid request path' });
+  }
 
   // Sanitize query params: strip any proxy-specific or legacy-auth params
   // before forwarding. Never forward a token via query — auth travels in the
   // Authorization header only (query tokens leak into logs/history). Also
   // strip ApiKey/api_key defensively so a stray param can't cause a
-  // dual-auth 401 on Jellyfin 12+.
-  const params = new URLSearchParams(req.query as Record<string, string>);
-  params.delete('X-Server-Url');
-  params.delete('X-Emby-Token');
-  params.delete('ApiKey');
-  params.delete('api_key');
+  // dual-auth 401 on Jellyfin 12+. Case-insensitive: URLSearchParams.delete
+  // is case-sensitive, so normalize first.
+  const rawParams = new URLSearchParams(req.query as Record<string, string>);
+  const STRIP_PARAM_RE = /^(api[_-]?key|.*token|.*authorization|x-server-url)$/i;
+  const params = new URLSearchParams();
+  for (const [key, value] of rawParams) {
+    if (STRIP_PARAM_RE.test(key)) continue;
+    params.append(key, value);
+  }
   targetUrl.search = params.toString();
 
   // Follow upstream redirects manually (bounded), re-validating every hop with
   // the same SSRF/self-loop checks so a redirect can never escape to a blocked
-  // target. Previously maxRedirects: 0 turned any 3xx (subpath base URL, http→https
+  // target. Redirects are pinned to the Jellyfin server origin: a compromised
+  // server or MITM must not be able to bounce the proxy to an arbitrary
+  // LAN/loopback host. Previously maxRedirects: 0 turned any 3xx (subpath base URL, http→https
   // upgrade, trailing-slash normalization) into a bodiless error response,
   // which broke every <img> and JSON call for such setups.
   const MAX_REDIRECTS = 5;
@@ -281,11 +390,17 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
           responseType: 'stream',
           validateStatus: () => true,
           maxRedirects: 0,
+          // Preserve raw bytes so forwarded Content-Length/Content-Encoding
+          // stay consistent with the actual body.
+          decompress: false,
           signal: controller.signal,
           headers: {
             'Authorization': buildAuthorizationHeader(deviceId, token),
             ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}),
             ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {}),
+            ...(req.headers['if-none-match'] ? { 'If-None-Match': req.headers['if-none-match'] } : {}),
+            ...(req.headers['if-modified-since'] ? { 'If-Modified-Since': req.headers['if-modified-since'] } : {}),
+            ...(req.headers['if-range'] ? { 'If-Range': req.headers['if-range'] } : {}),
           },
           data: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
         });
@@ -304,6 +419,7 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
       }
 
       // Redirect: discard the empty body, validate the next hop, and retry.
+      // Pinned to the Jellyfin origin so a 302 cannot bounce to arbitrary hosts.
       destroyStream(hopResponse.data);
       let nextUrl: URL | null = null;
       try {
@@ -315,9 +431,21 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
       if (!validatedNext) {
         return res.status(502).json({ error: 'Bad gateway: upstream redirect target blocked' });
       }
+      if (!isSameOriginOrUpgrade(validatedUrl, validatedNext)) {
+        return res.status(502).json({ error: 'Bad gateway: upstream redirect target blocked' });
+      }
+      if (serverBasePath && !validatedNext.pathname.startsWith(serverBasePath + '/') && validatedNext.pathname !== serverBasePath) {
+        return res.status(502).json({ error: 'Bad gateway: upstream redirect target blocked' });
+      }
       currentUrl = validatedNext;
     }
+    // Still redirecting after MAX_REDIRECTS+1 fetches — don't relay a bodiless 3xx.
+    if (response && response.status >= 300 && response.status < 400) {
+      destroyStream(response.data);
+      return res.status(502).json({ error: 'Bad gateway: too many redirects' });
+    }
   } catch (error) {
+    if (res.headersSent || res.writableEnded) return;
     const axiosError = error as AxiosError;
     if (
       axiosError.code === 'ERR_CANCELED' ||
@@ -344,6 +472,14 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
     return res.status(502).json({ error: 'Bad gateway: could not reach Jellyfin server' });
   }
 
+  // Reserve bare 401 for "no/invalid Siren session" (handled above). An
+  // upstream Jellyfin 401 (revoked token, password change) must not trigger
+  // the client's 401 → logout → /login interceptor, so map it to 502.
+  if (response.status === 401) {
+    destroyStream(response.data);
+    return res.status(502).json({ error: 'Jellyfin rejected the request — please log in again' });
+  }
+
   // Forward status
   res.status(response.status);
 
@@ -358,6 +494,7 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
     'last-modified',
     'expires',
     'content-disposition',
+    'content-encoding',
   ];
 
   for (const header of headersToForward) {
@@ -373,19 +510,25 @@ router.all('/proxy/:path(.*)?', raw({ type: '*/*', limit: '10mb' }), async (req:
   // live pipe that ignores Range requests — advertising bytes support there
   // makes the player issue ranged seeks that restart the stream from zero.
 
-  // Range-dependent responses must never be served across mismatched ranges
-  // by an intermediate cache.
-  const existingVary = res.getHeader('vary');
-  if (!existingVary) {
-    res.setHeader('Vary', 'Range');
-  } else if (!String(existingVary).toLowerCase().includes('range')) {
-    res.setHeader('Vary', `${existingVary}, Range`);
+  // Cache images for 24 hours (browser-only: auth is cookie-based, so a
+  // shared cache must not serve one user's art to another). Force private
+  // even if upstream sends public — Vary: Cookie backstops compliant caches
+  // but the combination is contradictory.
+  if (/\/Items\/[^/]+\/Images\//.test(targetPath)) {
+    res.setHeader('Cache-Control', 'private, max-age=86400');
   }
-
-  // Cache images for 24 hours
-  if (targetPath.includes('/Images/') && !res.getHeader('cache-control')) {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-  }
+  // Authenticated responses vary on Cookie so shared caches don't mix users.
+  const varyValues = new Set(
+    String(res.getHeader('vary') || '')
+      .split(',')
+      .map((v) => v.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  varyValues.add('range');
+  varyValues.add('cookie');
+  // Title-case Vary members for readability; values are case-insensitive.
+  const varyOut = [...varyValues].map((v) => (v === 'cookie' ? 'Cookie' : v === 'range' ? 'Range' : v));
+  res.setHeader('Vary', varyOut.join(', '));
 
   // Stream with explicit error handling. If the renderer navigates away or
   // reloads mid-stream, `res` closes while the upstream pipe is active —

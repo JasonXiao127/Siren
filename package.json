@@ -8,6 +8,9 @@
     "email": "JasonZ24@outlook.com"
   },
   "main": "dist-electron/main.cjs",
+  "engines": {
+    "node": ">=20"
+  },
   "workspaces": [
     "client",
     "server"
@@ -15,6 +18,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "npm run build --workspace=@siren/client && npm run build:electron",
+    "build:web": "npm run build --workspace=@siren/client && npm run build --workspace=@siren/server",
     "build:electron": "tsc -p electron/tsconfig.json && node scripts/build-electron.mjs",
     "icons": "electron scripts/gen-icon.cjs",
     "typecheck": "tsc -p electron/tsconfig.json && tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",

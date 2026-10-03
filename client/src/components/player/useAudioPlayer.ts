@@ -2,8 +2,10 @@ import { useEffect, useCallback, useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 import { usePlayerStore } from '@/store/playerStore';
 import { useAuthStore } from '@/store/authStore';
+import { withBase } from '@/lib/base';
 import {
   buildAudioUrl,
+  buildTrackImageUrl,
   reportPlaybackStart,
   reportPlaybackProgress,
   reportPlaybackStopped,
@@ -48,6 +50,10 @@ function subscribeToState(listener: () => void) {
 // feedback loop with the store's isPlaying state.
 let playIntent = false;
 
+// Generation counter: guards async play() rejections on fast skips so a
+// stale rejection from track A can't pause freshly-loaded track B.
+let loadGeneration = 0;
+
 // ---------------------------------------------------------------------------
 // Jellyfin playback reporting.
 //
@@ -85,11 +91,12 @@ function currentReportInfo(
   // No session (logged out, or nothing playing) — nothing to report.
   if (!useAuthStore.getState().userId || !playSessionId) return null;
   const { volume, repeatMode } = usePlayerStore.getState();
+  const clampedVolume = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0.8;
   return {
     itemId: trackId,
     playSessionId,
     positionTicks: secondsToTicks(positionSeconds),
-    volumeLevel: Math.round(volume * 100),
+    volumeLevel: Math.round(clampedVolume * 100),
     isMuted: muted,
     repeatMode: toJellyfinRepeatMode(repeatMode),
     ...extra,
@@ -99,16 +106,26 @@ function currentReportInfo(
 /**
  * Reports playback-stopped for whatever track the element currently holds
  * and retires its PlaySessionId. Also clears the "current" marker so a
- * subsequent loadTrack() always performs a fresh load.
+ * subsequent loadTrack() always performs a fresh load. Uses the element's
+ * live position (not the throttled module clock) so skip/end positions are exact.
  */
 function stopPreviousPlayback(audio: HTMLAudioElement): void {
   const previousId = audio.dataset.currentTrackId;
   audio.dataset.currentTrackId = '';
   if (previousId && playSessionId) {
-    const info = currentReportInfo(previousId, currentTime);
+    const info = currentReportInfo(previousId, Number.isFinite(audio.currentTime) ? audio.currentTime : currentTime);
     if (info) void reportPlaybackStopped(info);
   }
   playSessionId = null;
+}
+
+function reportProgressForCurrentAudio(audio: HTMLAudioElement, isPaused: boolean): void {
+  const id = audio.dataset.currentTrackId;
+  if (!id || !playSessionId) return;
+  lastProgressReportAt = Date.now();
+  const pos = Number.isFinite(audio.currentTime) ? audio.currentTime : currentTime;
+  const info = currentReportInfo(id, pos, { isPaused });
+  if (info) void reportPlaybackProgress(info);
 }
 
 function getSharedAudio(): HTMLAudioElement {
@@ -138,20 +155,26 @@ function getSharedAudio(): HTMLAudioElement {
   return sharedAudio;
 }
 
-function loadTrack(audio: HTMLAudioElement) {
+function loadTrack(audio: HTMLAudioElement, forceReload = false) {
   const { queue, currentIndex, setPlaying } = usePlayerStore.getState();
   const track = queue[currentIndex];
 
   // Skip reloading if this is already the loaded track (e.g. queue reorder,
-  // remove-from-queue, or clicking the same track again).
-  if (track && audio.dataset.currentTrackId === track.Id) return;
+  // remove-from-queue). forceReload bypasses this for explicit replay
+  // (click current track, Previous at start).
+  if (track && audio.dataset.currentTrackId === track.Id && !forceReload) return;
 
   // Retire the previous session (reports stopped) before starting the next.
   stopPreviousPlayback(audio);
+  // Reset the clock so the slider doesn't show the previous track's time.
+  currentTime = 0;
+  duration = 0;
+  emitState();
 
   if (!track) {
     // Queue cleared / no current track — stop whatever is playing.
     playIntent = false;
+    loadGeneration += 1;
     audio.pause();
     audio.src = '';
     audio.load();
@@ -161,6 +184,7 @@ function loadTrack(audio: HTMLAudioElement) {
   const url = buildAudioUrl(track.Id);
 
   // Explicit track-change sequence to avoid stale states
+  const generation = ++loadGeneration;
   audio.pause();
   audio.src = '';
   audio.load();
@@ -172,7 +196,9 @@ function loadTrack(audio: HTMLAudioElement) {
   if (startInfo) void reportPlaybackStart(startInfo);
   playIntent = true;
   audio.play().catch(() => {
-    // Autoplay may be blocked; user will need to click play
+    // Autoplay may be blocked; user will need to click play.
+    // Guarded: ignore stale rejections from a superseded load.
+    if (generation !== loadGeneration) return;
     playIntent = false;
     setPlaying(false);
   });
@@ -205,8 +231,30 @@ function attachAudioListeners(audio: HTMLAudioElement) {
     const { repeatMode, next, setPlaying } = usePlayerStore.getState();
 
     if (repeatMode === 'one') {
-      audio.currentTime = 0;
-      audio.play().catch(() => setPlaying(false));
+      // Each loop is a new play server-side (play counts, recently-played).
+      // Retire the old session and start a fresh one instead of replaying
+      // under the same PlaySessionId forever.
+      const id = audio.dataset.currentTrackId;
+      stopPreviousPlayback(audio);
+      if (!id) {
+        next();
+        return;
+      }
+      audio.src = buildAudioUrl(id);
+      audio.dataset.currentTrackId = id;
+      playSessionId = newPlaySessionId();
+      lastProgressReportAt = Date.now();
+      currentTime = 0;
+      emitState();
+      const startInfo = currentReportInfo(id, 0, { isPaused: false });
+      if (startInfo) void reportPlaybackStart(startInfo);
+      playIntent = true;
+      const generation = ++loadGeneration;
+      audio.play().catch(() => {
+        if (generation !== loadGeneration) return;
+        playIntent = false;
+        setPlaying(false);
+      });
       return;
     }
 
@@ -254,22 +302,37 @@ function attachAudioListeners(audio: HTMLAudioElement) {
       usePlayerStore.getState().setPlaying(false);
       // timeupdate stops firing while paused, so report the paused position
       // explicitly (no-op when nothing is loaded — marker is empty then).
-      const id = audio.dataset.currentTrackId;
-      if (id) {
-        lastProgressReportAt = Date.now();
-        const info = currentReportInfo(id, audio.currentTime, { isPaused: true });
-        if (info) void reportPlaybackProgress(info);
-      }
+      // Sync the module clock too so a subsequent Stopped uses the exact spot.
+      currentTime = Number.isFinite(audio.currentTime) ? audio.currentTime : currentTime;
+      reportProgressForCurrentAudio(audio, true);
     }
+  });
+  audio.addEventListener('seeked', () => {
+    currentTime = Number.isFinite(audio.currentTime) ? audio.currentTime : currentTime;
+    emitState();
   });
 }
 
 function attachStoreSubscriptions() {
-  // Track change: load a new source only when the actual current track changes.
+  // Track change: load a new source only when the actual current track changes,
+  // or when playNonce bumps (explicit replay of the same track).
   usePlayerStore.subscribe((state, prev) => {
     if (!sharedAudio) return;
-    if (state.queue === prev.queue && state.currentIndex === prev.currentIndex) return;
-    loadTrack(sharedAudio);
+    const trackChanged =
+      state.queue !== prev.queue || state.currentIndex !== prev.currentIndex;
+    const replayRequested = state.playNonce !== prev.playNonce;
+    if (!trackChanged && !replayRequested) return;
+    loadTrack(sharedAudio, replayRequested && !trackChanged);
+  });
+
+  // End-of-queue stop (repeat off, user pressed Next on last track): retire
+  // the session server-side. Distinct from pause (which sends Progress).
+  usePlayerStore.subscribe((state, prev) => {
+    if (!sharedAudio || state.stopRequestId === prev.stopRequestId) return;
+    stopPreviousPlayback(sharedAudio);
+    playIntent = false;
+    currentTime = 0;
+    emitState();
   });
 
   // Play/pause control
@@ -277,7 +340,28 @@ function attachStoreSubscriptions() {
     if (!sharedAudio || state.isPlaying === prev.isPlaying) return;
     playIntent = state.isPlaying;
     if (state.isPlaying) {
+      const { queue, currentIndex } = usePlayerStore.getState();
+      if (queue.length === 0) {
+        // Nothing to play — revert the phantom toggle.
+        playIntent = false;
+        usePlayerStore.getState().setPlaying(false);
+        return;
+      }
+      if (!sharedAudio.dataset.currentTrackId) {
+        // Retired after end-of-queue stop (or fresh boot with persisted
+        // index): reload the current track instead of deadlocking.
+        const track = queue[currentIndex];
+        if (!track) {
+          playIntent = false;
+          usePlayerStore.getState().setPlaying(false);
+          return;
+        }
+        loadTrack(sharedAudio, true);
+        return;
+      }
+      const generation = ++loadGeneration;
       sharedAudio.play().catch(() => {
+        if (generation !== loadGeneration) return;
         playIntent = false;
         usePlayerStore.getState().setPlaying(false);
       });
@@ -286,10 +370,50 @@ function attachStoreSubscriptions() {
     }
   });
 
-  // Volume control
+  // Volume control — push the new level so dashboard position/volume stays fresh.
   usePlayerStore.subscribe((state, prev) => {
     if (!sharedAudio || state.volume === prev.volume) return;
     sharedAudio.volume = state.volume;
+    if (playIntent) reportProgressForCurrentAudio(sharedAudio, false);
+  });
+
+  // Best-effort Stopped on tab close/reload so dashboard "Now Playing"
+  // doesn't stick. Uses sendBeacon (survives unload); falls back to fetch.
+  window.addEventListener('beforeunload', () => {
+    try {
+      const audio = sharedAudio;
+      const id = audio?.dataset.currentTrackId;
+      if (!id || !playSessionId) return;
+      const { userId } = useAuthStore.getState();
+      if (!userId) return;
+      const pos = audio && Number.isFinite(audio.currentTime) ? audio.currentTime : currentTime;
+      const body = JSON.stringify({
+        ItemId: id,
+        MediaSourceId: id,
+        PlaySessionId: playSessionId,
+        PositionTicks: secondsToTicks(pos),
+      });
+      // Report directly to the proxy path so it works even as axios tears down.
+      // withBase-aware so subpath hosting (/siren) works.
+      const url = withBase('/api/proxy/Sessions/Playing/Stopped');
+      if (typeof navigator.sendBeacon === 'function') {
+        try {
+          // sendBeacon doesn't send cookies in all contexts; server will 401
+          // and we ignore — still best-effort.
+          navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+          return;
+        } catch {
+          // fall through
+        }
+      }
+      void reportPlaybackStopped({
+        itemId: id,
+        playSessionId,
+        positionTicks: secondsToTicks(pos),
+      });
+    } catch {
+      // never block unload
+    }
   });
 }
 
@@ -304,10 +428,18 @@ function attachMediaSession() {
     if (track?.Id === lastTrackId) return;
     lastTrackId = track?.Id;
     if (!track) return;
+    let artwork: MediaImage[] | undefined;
+    try {
+      const artUrl = buildTrackImageUrl(track, 512);
+      if (artUrl) artwork = [{ src: artUrl, sizes: '512x512', type: 'image/jpeg' }];
+    } catch {
+      artwork = undefined;
+    }
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.Name,
       artist: track.Artists?.[0] || track.AlbumArtist || 'Unknown Artist',
       album: track.Album || '',
+      ...(artwork ? { artwork } : {}),
     });
   };
 
@@ -316,9 +448,11 @@ function attachMediaSession() {
 
   navigator.mediaSession.setActionHandler('play', () => {
     playIntent = true;
+    const generation = ++loadGeneration;
     getSharedAudio()
       .play()
       .catch(() => {
+        if (generation !== loadGeneration) return;
         playIntent = false;
         usePlayerStore.getState().setPlaying(false);
       });
@@ -356,10 +490,12 @@ function attachKeyboardShortcuts() {
       audio.currentTime = Math.min(audio.currentTime + 5, audio.duration || 0);
       currentTime = audio.currentTime;
       emitState();
+      reportProgressForCurrentAudio(audio, !audio.paused && playIntent ? false : true);
     } else if (e.key === 'ArrowLeft') {
       audio.currentTime = Math.max(audio.currentTime - 5, 0);
       currentTime = audio.currentTime;
       emitState();
+      reportProgressForCurrentAudio(audio, !audio.paused && playIntent ? false : true);
     } else if (e.key === 'm' || e.key === 'M') {
       setMuted(!muted);
     }
@@ -371,7 +507,10 @@ function attachKeyboardShortcuts() {
 function setMuted(value: boolean) {
   if (muted === value) return;
   muted = value;
-  if (sharedAudio) sharedAudio.muted = value;
+  if (sharedAudio) {
+    sharedAudio.muted = value;
+    if (playIntent) reportProgressForCurrentAudio(sharedAudio, false);
+  }
   emitState();
 }
 

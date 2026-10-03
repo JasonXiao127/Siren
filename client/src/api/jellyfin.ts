@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient, reportClient } from './client';
 import { useAuthStore } from '@/store/authStore';
 import { withBase } from '@/lib/base';
 import type { Track } from '@/store/playerStore';
@@ -157,13 +157,14 @@ export async function setFavorite(
   itemId: string,
   isFavorite: boolean
 ): Promise<void> {
+  const seg = encodeURIComponent(itemId);
   if (isFavorite) {
     // Canonical Jellyfin 12 path (the /Users/{id}/FavoriteItems form is legacy).
-    await apiClient.post(`/proxy/UserFavoriteItems/${itemId}`, null, {
+    await apiClient.post(`/proxy/UserFavoriteItems/${seg}`, null, {
       params: { userId },
     });
   } else {
-    await apiClient.delete(`/proxy/UserFavoriteItems/${itemId}`, {
+    await apiClient.delete(`/proxy/UserFavoriteItems/${seg}`, {
       params: { userId },
     });
   }
@@ -210,8 +211,9 @@ export async function createPlaylist(userId: string, name: string): Promise<stri
 }
 
 export async function deletePlaylist(userId: string, playlistId: string): Promise<void> {
+  const seg = encodeURIComponent(playlistId);
   try {
-    await apiClient.delete(`/proxy/Playlists/${playlistId}`, {
+    await apiClient.delete(`/proxy/Playlists/${seg}`, {
       params: {
         UserId: userId,
       },
@@ -219,7 +221,7 @@ export async function deletePlaylist(userId: string, playlistId: string): Promis
   } catch (error) {
     // Some Jellyfin versions/instances reject the playlist-specific route.
     // Fall back to the generic item delete, which also works for playlists.
-    await apiClient.delete(`/proxy/Items/${playlistId}`, {
+    await apiClient.delete(`/proxy/Items/${seg}`, {
       params: {
         UserId: userId,
       },
@@ -238,7 +240,7 @@ export async function addTracksToPlaylist(
   trackIds: string[]
 ): Promise<void> {
   if (trackIds.length === 0) return;
-  await apiClient.post(`/proxy/Playlists/${playlistId}/Items`, null, {
+  await apiClient.post(`/proxy/Playlists/${encodeURIComponent(playlistId)}/Items`, null, {
     params: {
       Ids: trackIds.join(','),
       UserId: userId,
@@ -257,7 +259,7 @@ export async function removeTracksFromPlaylist(
   entryIds: string[]
 ): Promise<void> {
   if (entryIds.length === 0) return;
-  await apiClient.delete(`/proxy/Playlists/${playlistId}/Items`, {
+  await apiClient.delete(`/proxy/Playlists/${encodeURIComponent(playlistId)}/Items`, {
     params: {
       EntryIds: entryIds.join(','),
       UserId: userId,
@@ -311,7 +313,7 @@ export async function getArtistAlbums(userId: string, artistId: string): Promise
 }
 
 export async function getItem(userId: string, itemId: string): Promise<JellyfinItem> {
-  const response = await apiClient.get<JellyfinItem>(`/proxy/Items/${itemId}`, {
+  const response = await apiClient.get<JellyfinItem>(`/proxy/Items/${encodeURIComponent(itemId)}`, {
     params: { userId },
   });
   return response.data;
@@ -374,10 +376,12 @@ export function toJellyfinRepeatMode(mode: string): JellyfinRepeatMode {
 
 async function postPlaybackReport(path: string, body: Record<string, unknown>): Promise<void> {
   try {
-    await apiClient.post(`/proxy${path}`, body);
+    // Uses the interceptor-free client so reporting never triggers the
+    // global 401 → logout → /login redirect mid-playback.
+    await reportClient.post(`/proxy${path}`, body);
   } catch {
     // Reporting must never break playback — swallow errors silently.
-    // (Auth failures still surface via the shared 401 interceptor.)
+    if (import.meta.env.DEV) console.debug(`[siren] playback report failed: ${path}`);
   }
 }
 
@@ -433,7 +437,7 @@ const AUDIO_CONTAINERS = encodeURIComponent(
 export function buildAudioUrl(trackId: string): string {
   const { userId, deviceId } = useAuthStore.getState();
   return (
-    withBase(`/api/proxy/Audio/${trackId}/universal`) +
+    withBase(`/api/proxy/Audio/${encodeURIComponent(trackId)}/universal`) +
     `?UserId=${encodeURIComponent(userId)}` +
     `&DeviceId=${encodeURIComponent(deviceId)}` +
     `&MaxStreamingBitrate=140000000` +
@@ -447,17 +451,21 @@ export function buildAudioUrl(trackId: string): string {
 
 /**
  * Builds an image URL. Auth is handled by the server-side session cookie —
- * the Jellyfin token is never exposed in the URL.
+ * the Jellyfin token is never exposed in the URL. Includes the Jellyfin
+ * image tag as a cache-buster so changed art doesn't stay stale behind the
+ * 24h image cache.
  */
 export function buildImageUrl(
   itemId: string,
   maxWidth: number = 300,
-  imageType: 'Primary' | 'Thumb' = 'Primary'
+  imageType: 'Primary' | 'Thumb' = 'Primary',
+  tag?: string
 ): string {
   return (
-    withBase(`/api/proxy/Items/${itemId}/Images/${imageType}`) +
+    withBase(`/api/proxy/Items/${encodeURIComponent(itemId)}/Images/${imageType}`) +
     `?maxWidth=${maxWidth}` +
-    `&quality=90`
+    `&quality=90` +
+    (tag ? `&tag=${encodeURIComponent(tag)}` : '')
   );
 }
 
@@ -470,10 +478,10 @@ export function buildImageUrl(
  */
 export function buildTrackImageUrl(track: Track, maxWidth: number = 300): string | null {
   if (track.ImageTags?.Primary) {
-    return buildImageUrl(track.Id, maxWidth, 'Primary');
+    return buildImageUrl(track.Id, maxWidth, 'Primary', track.ImageTags.Primary);
   }
   if (track.ImageTags?.Thumb) {
-    return buildImageUrl(track.Id, maxWidth, 'Thumb');
+    return buildImageUrl(track.Id, maxWidth, 'Thumb', track.ImageTags.Thumb);
   }
   if (track.AlbumId) {
     return buildImageUrl(track.AlbumId, maxWidth, 'Primary');

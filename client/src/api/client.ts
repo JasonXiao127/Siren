@@ -9,6 +9,14 @@ export const apiClient = axios.create({
   withCredentials: true,
 });
 
+// Playback reporting must never log the user out mid-song: it uses a bare
+// client with no 401 interceptor so an expired session just fails silently.
+export const reportClient = axios.create({
+  baseURL: withBase('/api'),
+  timeout: 10000,
+  withCredentials: true,
+});
+
 // Response interceptor: handle 401 by deleting the server session, clearing
 // local state, and redirecting to login.
 //
@@ -25,13 +33,19 @@ apiClient.interceptors.response.use(
     // Pathname-based so this stays correct under a subpath base (withBase)
     // and if baseURL ever becomes absolute. error.config.url is the relative
     // path as passed ('/auth/...'), but be defensive either way.
+    // Anchor to the API auth prefix so a future /proxy path containing
+    // "/auth/" can't falsely suppress logout.
     let requestPath = requestUrl;
     try {
       requestPath = new URL(requestUrl, 'http://localhost').pathname;
     } catch {
       // keep raw value
     }
-    if (status === 401 && !requestPath.includes('/auth/')) {
+    const isAuthRoute =
+      requestPath === '/auth/login' ||
+      requestPath === '/auth/logout' ||
+      requestPath === '/auth/session';
+    if (status === 401 && !isAuthRoute) {
       try {
         await apiClient.post('/auth/logout');
       } catch {

@@ -39,7 +39,7 @@ export default function TopBar() {
     // Clear the server-side session cookie, then local state
     await apiLogout();
     logout();
-    navigate('/login');
+    navigate('/login', { replace: true });
   }
 
   return (

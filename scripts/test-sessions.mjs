@@ -31,13 +31,14 @@ if (READ_MODE) {
 }
 
 // 1. Create a session and flush immediately (simulates quit before debounce).
-const created = createSession({
+const { session: created, replaced } = createSession({
   serverUrl: 'https://jellyfin.example.com',
   token: 'tok_abc',
   deviceId: 'dev-1',
   userId: 'user-1',
   userName: 'alice',
 });
+if (replaced.length !== 0) throw new Error('FAIL: fresh store should evict nothing');
 flushSessions();
 
 if (!fs.existsSync(file)) throw new Error('FAIL: sessions.json not written');

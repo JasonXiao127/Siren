@@ -12,7 +12,11 @@ import { loadSessions, flushSessions } from './session';
 loadSessions();
 
 const app = createApp();
-const PORT = Number(process.env.PORT || 5176);
+const PORT_RAW = process.env.PORT !== undefined ? Number(process.env.PORT) : 5176;
+const PORT = Number.isFinite(PORT_RAW) && PORT_RAW >= 0 && PORT_RAW <= 65535 ? Math.floor(PORT_RAW) : 5176;
+if (PORT !== PORT_RAW) {
+  console.warn(`[siren] Invalid PORT "${process.env.PORT}", falling back to 5176`);
+}
 // In Docker/prod the server must bind 0.0.0.0 so the mapped port is
 // reachable from the host. Locally keep loopback-only. HOST overrides.
 const HOST =

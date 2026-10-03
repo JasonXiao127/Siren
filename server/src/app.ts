@@ -35,6 +35,9 @@ export function resolveClientDist(): string | null {
 export function getBasePath(): string {
   let base = (process.env.BASE_PATH || '/').trim();
   if (!base.startsWith('/')) base = `/${base}`;
+  // Collapse leading slashes so odd inputs like '///siren' can't produce
+  // '//…' mounts. Mirrors client getBasePath().
+  base = base.replace(/^\/{2,}/, '/');
   if (base.length > 1) base = base.replace(/\/+$/, '');
   if (base === '') base = '/';
   return base;
@@ -133,7 +136,12 @@ export function createApp(): express.Express {
   // Trust the upstream reverse-proxy hop count when Siren runs behind a TLS
   // reverse proxy (Caddy, Nginx, Traefik, ...). Leave unset (0) for direct
   // exposure. Needed so req.secure / rate-limiter client IPs are correct.
-  app.set('trust proxy', Number(process.env.TRUST_PROXY || 0));
+  const trustProxyRaw = Number(process.env.TRUST_PROXY || 0);
+  const trustProxy = Number.isFinite(trustProxyRaw) && trustProxyRaw >= 0 ? Math.floor(trustProxyRaw) : 0;
+  if (String(process.env.TRUST_PROXY ?? '') !== '' && trustProxy === 0 && process.env.TRUST_PROXY !== '0') {
+    console.warn('[siren] Invalid TRUST_PROXY, falling back to 0');
+  }
+  app.set('trust proxy', trustProxy);
 
   // Security headers. upgrade-insecure-requests is disabled: it rewrites
   // subresources to https:// which breaks plain-http serving, and is
@@ -193,12 +201,38 @@ export function createApp(): express.Express {
   // it, so they cannot use Siren as a proxy or attempt logins through it.
   // Docker/standalone never sets this (see env docs above).
   const expectedToken = process.env.SIREN_TOKEN;
+  if ('SIREN_TOKEN' in process.env && !expectedToken) {
+    console.warn('[siren] SIREN_TOKEN is set but empty — token guard disabled (config error)');
+  }
   if (expectedToken) {
+    if (process.env.NODE_ENV === 'production' && process.env.SIREN_DATA_DIR === '/data') {
+      // Docker layout (/data volume) with a token set means SIREN_TOKEN
+      // leaked into Docker env, which would 403 every browser /api call.
+      console.warn('[siren] SIREN_TOKEN is set with Docker data dir (/data) — browsers cannot send it; unset SIREN_TOKEN in Docker');
+    }
     app.use(API_MOUNT, (req, res, next) => {
       if (tokensMatch(req.headers['x-siren-token'], expectedToken)) return next();
       res.status(403).json({ error: 'Forbidden' });
     });
   }
+
+  // Warn when a TLS proxy is likely in front but trust proxy is off: the
+  // session cookie would miss Secure and rate limits would share one bucket.
+  // Module-level flag: req is per-request, so a req-attached flag would spam
+  // on every proxied image/audio chunk.
+  let protoWarned = false;
+  app.use(API_MOUNT, (req, _res, next) => {
+    if (
+      !protoWarned &&
+      trustProxy === 0 &&
+      req.headers['x-forwarded-proto'] === 'https' &&
+      !req.secure
+    ) {
+      protoWarned = true;
+      console.warn('[siren] X-Forwarded-Proto:https seen with TRUST_PROXY=0 — set TRUST_PROXY so Secure cookies and rate-limit IPs are correct');
+    }
+    next();
+  });
 
   // API routes (order matters: auth before proxy)
   app.use(API_MOUNT, routes);

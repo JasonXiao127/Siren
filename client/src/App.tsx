@@ -1,6 +1,7 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { apiClient } from '@/api/client';
 import TopBar from '@/components/layout/TopBar';
 import Sidebar from '@/components/layout/Sidebar';
 import MainContent from '@/components/layout/MainContent';
@@ -18,11 +19,39 @@ import Favorites from '@/pages/Favorites';
 
 function ProtectedLayout() {
   const user = useAuthStore((state) => state.user);
+  const logout = useAuthStore((state) => state.logout);
+  const location = useLocation();
   const [queueOpen, setQueueOpen] = useState(false);
   const [playerExpanded, setPlayerExpanded] = useState(false);
+  const [validating, setValidating] = useState(true);
+
+  // Validate the httpOnly server session on boot. LocalStorage alone would
+  // paint the authed shell with a dead cookie (flash + 401 storm).
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setValidating(false);
+      return;
+    }
+    apiClient
+      .get('/auth/session')
+      .catch(() => {
+        logout();
+      })
+      .finally(() => {
+        if (!cancelled) setValidating(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, logout]);
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    const next = encodeURIComponent(location.pathname + location.search);
+    return <Navigate to={`/login?next=${next}`} replace />;
+  }
+  if (validating) {
+    return <div className="flex h-screen w-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>;
   }
 
   return (
@@ -79,10 +108,18 @@ function ProtectedLayout() {
   );
 }
 
+function WildcardRedirect({ user }: { user: unknown }) {
+  const location = useLocation();
+  if (user) return <Navigate to="/" replace />;
+  const next = encodeURIComponent(location.pathname + location.search);
+  return <Navigate to={`/login?next=${next}`} replace />;
+}
+
 export default function App() {
+  const user = useAuthStore((state) => state.user);
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
+      <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
       <Route element={<ProtectedLayout />}>
         <Route path="/" element={<Home />} />
         <Route path="/albums" element={<Albums />} />
@@ -92,7 +129,7 @@ export default function App() {
         <Route path="/artist/:id" element={<ArtistView />} />
         <Route path="/search" element={<Search />} />
       </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<WildcardRedirect user={user} />} />
     </Routes>
   );
 }

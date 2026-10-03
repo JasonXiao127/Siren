@@ -30,12 +30,21 @@ loadSessions();
 
 const app = createApp();
 const requestedPort = Number(process.env.SIREN_PORT || 0);
+const safePort = Number.isFinite(requestedPort) && requestedPort >= 0 && requestedPort <= 65535 ? Math.floor(requestedPort) : 0;
+if (safePort !== requestedPort) {
+  console.warn(`[siren] Invalid SIREN_PORT "${process.env.SIREN_PORT}", falling back to ephemeral`);
+}
 
-const server: Server = app.listen(requestedPort, '127.0.0.1', () => {
+const server: Server = app.listen(safePort, '127.0.0.1', () => {
   const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : requestedPort;
+  const port = typeof address === 'object' && address ? address.port : safePort;
   console.log(`[siren] Server listening on http://127.0.0.1:${port}`);
   parentPort?.postMessage({ type: 'ready', port });
+});
+server.on('error', (err: Error) => {
+  // EADDRINUSE etc: log loudly so the main process timeout/exit path has
+  // context instead of a bare 10s hang.
+  console.error('[siren] Server listen error:', err);
 });
 
 let shuttingDown = false;
@@ -61,12 +70,24 @@ process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 process.on('exit', () => flushSessions());
 
-// Crash guards: an uncaught exception in this process would otherwise kill
-// the utility process abruptly (the main process respawns it, but we prefer
-// to stay alive and keep serving). Log loudly and continue.
+// Crash guards: never keep serving possibly-corrupt in-memory state.
+// Flush what we can, then exit non-zero and let the main process respawn
+// a clean child (bounded backoff + dialog after MAX attempts).
 process.on('uncaughtException', (err) => {
-  console.error('[siren] Uncaught exception:', err);
+  console.error('[siren] Uncaught exception, exiting for respawn:', err);
+  try {
+    flushSessions();
+  } catch {
+    // best effort
+  }
+  process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[siren] Unhandled rejection:', reason);
+  console.error('[siren] Unhandled rejection, exiting for respawn:', reason);
+  try {
+    flushSessions();
+  } catch {
+    // best effort
+  }
+  process.exit(1);
 });

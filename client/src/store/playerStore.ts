@@ -34,6 +34,10 @@ interface PlayerState {
   volume: number;
   shuffle: boolean;
   repeatMode: RepeatMode;
+  /** Incremented to force a reload even when queue/index are unchanged (replay same track). */
+  playNonce: number;
+  /** Incremented when the queue hits the end (repeat off) so the audio layer can retire the session. */
+  stopRequestId: number;
   playTrack: (track: Track, queue: Track[]) => void;
   playQueue: (queue: Track[], startIndex?: number) => void;
   playSingle: (track: Track) => void;
@@ -108,6 +112,8 @@ export const usePlayerStore = create<PlayerState>()(
       volume: 0.8,
       shuffle: false,
       repeatMode: 'off',
+      playNonce: 0,
+      stopRequestId: 0,
 
       playTrack: (track, queue) =>
         set((state) => {
@@ -116,6 +122,7 @@ export const usePlayerStore = create<PlayerState>()(
             queue: state.shuffle ? shuffleQueue(queue, startIndex) : queue,
             currentIndex: startIndex,
             isPlaying: true,
+            playNonce: state.playNonce + 1,
           };
         }),
 
@@ -127,6 +134,7 @@ export const usePlayerStore = create<PlayerState>()(
           queue: state.shuffle ? shuffleEntireQueue(queue) : queue,
           currentIndex: state.shuffle ? 0 : startIndex,
           isPlaying: true,
+          playNonce: state.playNonce + 1,
         })),
 
       /**
@@ -143,6 +151,7 @@ export const usePlayerStore = create<PlayerState>()(
             queue,
             currentIndex: insertAt,
             isPlaying: true,
+            playNonce: state.playNonce + 1,
           };
         }),
 
@@ -153,7 +162,7 @@ export const usePlayerStore = create<PlayerState>()(
       jumpTo: (index) =>
         set((state) => {
           if (index < 0 || index >= state.queue.length) return state;
-          return { currentIndex: index, isPlaying: true };
+          return { currentIndex: index, isPlaying: true, playNonce: state.playNonce + 1 };
         }),
 
       playShuffled: (queue) => {
@@ -164,12 +173,13 @@ export const usePlayerStore = create<PlayerState>()(
         // player to a random index.
         const shuffled = shuffleEntireQueue(queue);
 
-        set({
+        set((state) => ({
           queue: shuffled,
           currentIndex: 0,
           isPlaying: true,
           shuffle: true,
-        });
+          playNonce: state.playNonce + 1,
+        }));
       },
 
       next: () => {
@@ -185,18 +195,22 @@ export const usePlayerStore = create<PlayerState>()(
 
         if (nextIndex >= queue.length) {
           if (repeatMode === 'all') {
-            // Queue wrapped around — reshuffle if shuffle is on
+            // Queue wrapped around — reshuffle the entire queue so the loop
+            // doesn't always replay the same head track when shuffle is on.
             nextIndex = 0;
             if (shuffle) {
               set({
-                queue: shuffleQueue(queue, nextIndex),
+                queue: shuffleEntireQueue(queue),
                 currentIndex: nextIndex,
                 isPlaying: true,
               });
               return;
             }
           } else {
-            set({ isPlaying: false });
+            // End of queue with repeat off: stop and ask the audio layer to
+            // retire the session (reports Stopped). Keeps index so the UI
+            // still shows the last track.
+            set((state) => ({ isPlaying: false, stopRequestId: state.stopRequestId + 1 }));
             return;
           }
         }
@@ -205,18 +219,30 @@ export const usePlayerStore = create<PlayerState>()(
       },
 
       previous: () => {
-        const { queue, currentIndex } = get();
+        const { queue, currentIndex, repeatMode } = get();
         if (queue.length === 0) return;
 
         let prevIndex = currentIndex - 1;
         if (prevIndex < 0) {
-          prevIndex = queue.length - 1;
+          // With repeat off, Previous at the start restarts the first track
+          // instead of wrapping to the end (standard player behavior).
+          if (repeatMode === 'all') {
+            prevIndex = queue.length - 1;
+          } else {
+            prevIndex = 0;
+          }
         }
 
-        set({ currentIndex: prevIndex, isPlaying: true });
+        set((state) => ({ currentIndex: prevIndex, isPlaying: true, playNonce: state.playNonce + 1 }));
       },
 
-      togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
+      togglePlay: () =>
+        set((state) => {
+          // No queue → nothing to play; toggling would flip a phantom
+          // isPlaying state that the audio element can never satisfy.
+          if (state.queue.length === 0) return state;
+          return { isPlaying: !state.isPlaying };
+        }),
 
       setVolume: (volume) => set({ volume }),
 
