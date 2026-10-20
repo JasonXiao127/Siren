@@ -15,10 +15,12 @@ interface AuthState {
   logout: () => void;
 }
 
+const DEVICE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 function getOrCreateDeviceId(): string {
   const STORAGE_KEY = 'siren-device-id';
   const existing = localStorage.getItem(STORAGE_KEY);
-  if (existing) return existing;
+  if (existing && DEVICE_ID_RE.test(existing)) return existing;
 
   // crypto.randomUUID() requires a secure context (https:, or http://localhost).
   // On plain-http LAN IP access it's unavailable, which would throw and crash
@@ -55,6 +57,13 @@ export const useAuthStore = create<AuthState>()(
         serverUrl: state.serverUrl,
         userId: state.userId,
         user: state.user,
+      }),
+      // partialize is write-only; always keep the in-memory deviceId so a
+      // corrupt or stale persisted blob can't replace it during rehydration.
+      merge: (persisted, current) => ({
+        ...current,
+        ...(persisted as object),
+        deviceId: current.deviceId,
       }),
     }
   )

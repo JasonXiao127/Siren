@@ -8,6 +8,7 @@ import {
   getSession,
   parseCookies,
   cookieOptions,
+  cookieClearOptions,
   SESSION_COOKIE_NAME,
 } from './session';
 
@@ -232,6 +233,9 @@ router.get('/auth/session', (req: Request, res: Response) => {
   if (!session) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
+  // Browsers never report cookie age back, so reissue on every probe to keep
+  // the cookie's Max-Age aligned with the server's sliding session TTL.
+  res.cookie(SESSION_COOKIE_NAME, session.id, cookieOptions(req.secure === true));
   return res.json({ user: { id: session.userId, name: session.userName }, serverUrl: session.serverUrl });
 });
 
@@ -262,7 +266,7 @@ router.post('/auth/logout', async (req: Request, res: Response) => {
     deleteSession(session.id);
   }
 
-  res.clearCookie(SESSION_COOKIE_NAME, cookieOptions(req.secure === true));
+  res.clearCookie(SESSION_COOKIE_NAME, cookieClearOptions(req.secure === true));
   res.json({ ok: true });
 });
 

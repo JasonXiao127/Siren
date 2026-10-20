@@ -16,6 +16,22 @@ function isValidServerUrl(value: string): boolean {
   }
 }
 
+// Mirrors the server's minimal URL guard so blocked targets get a clear
+// message here instead of a generic "Invalid server URL" from the API.
+function isBlockedServerUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.username || url.password) return true;
+    const rawHost = url.hostname.toLowerCase();
+    const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
+    if (/^(169\.254\.|0\.)/.test(host)) return true;
+    if (host === '0' || host === '0.0.0.0') return true;
+    return /^(fe[89ab][0-9a-f]*:)/.test(host);
+  } catch {
+    return false;
+  }
+}
+
 export default function Login() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -33,6 +49,20 @@ export default function Login() {
 
     if (!isValidServerUrl(serverUrl)) {
       toast.error('Please enter a valid server URL (http:// or https://)');
+      setLoading(false);
+      return;
+    }
+
+    if (isBlockedServerUrl(serverUrl)) {
+      toast.error("That address can't be used — use the LAN IP/hostname, without credentials");
+      setLoading(false);
+      return;
+    }
+
+    // Autofill can populate the DOM without firing React's onChange, leaving
+    // state empty even though the native `required` check passed.
+    if (!username.trim() || !password) {
+      toast.error('Enter your username and password');
       setLoading(false);
       return;
     }

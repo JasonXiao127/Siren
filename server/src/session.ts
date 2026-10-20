@@ -255,12 +255,19 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return cookies;
 }
 
-export function cookieOptions(secure: boolean) {
+/** Clearing needs the same identity attributes but no maxAge/expires. */
+export function cookieClearOptions(secure: boolean) {
   return {
     httpOnly: true,
     sameSite: 'lax' as const,
     secure,
-    maxAge: SESSION_TTL_MS,
     path: '/',
+  };
+}
+
+export function cookieOptions(secure: boolean) {
+  return {
+    ...cookieClearOptions(secure),
+    maxAge: SESSION_TTL_MS,
   };
 }

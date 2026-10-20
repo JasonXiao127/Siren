@@ -4,6 +4,8 @@ services:
     # from Docker Hub instead, comment out `build` and run `docker pull` first.
     build:
       context: .
+      args:
+        BASE_PATH: ${BASE_PATH:-/}
     image: maraudermarauder/siren:latest
     container_name: siren
     ports:
