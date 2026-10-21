@@ -29,6 +29,10 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const status = error.response?.status;
+    // Machine-readable failure code (see server/src/types.ts). Older servers
+    // and the Electron bridge's synthetic errors do not send one, so fall back
+    // to the status check below for untagged responses.
+    const code: string | undefined = error.response?.data?.code;
     const requestUrl: string = error.config?.url || '';
     // Pathname-based so this stays correct under a subpath base (withBase)
     // and if baseURL ever becomes absolute. error.config.url is the relative
@@ -45,7 +49,13 @@ apiClient.interceptors.response.use(
       requestPath === '/auth/login' ||
       requestPath === '/auth/logout' ||
       requestPath === '/auth/session';
-    if (status === 401 && !isAuthRoute) {
+    // When a code is present, require both the Siren session-failure code and a
+    // 401, so a relayed body carrying a coincidental code at another status
+    // cannot force logout; untagged responses keep the status-only behavior.
+    const isUnauthenticated = code
+      ? code === 'NOT_AUTHENTICATED' && status === 401
+      : status === 401;
+    if (isUnauthenticated && !isAuthRoute) {
       try {
         await apiClient.post('/auth/logout');
       } catch {

@@ -7,6 +7,8 @@ import fs from 'fs';
 import { Writable } from 'stream';
 import type { IncomingMessage } from 'http';
 import routes from './routes';
+import { ErrorCode } from './types';
+import type { ErrorResponse } from './types';
 
 /**
  * Resolves the built client's dist directory across layouts:
@@ -212,7 +214,10 @@ export function createApp(): express.Express {
     }
     app.use(API_MOUNT, (req, res, next) => {
       if (tokensMatch(req.headers['x-siren-token'], expectedToken)) return next();
-      res.status(403).json({ error: 'Forbidden' });
+      res.status(403).json({
+        error: 'Forbidden',
+        code: ErrorCode.FORBIDDEN,
+      } satisfies ErrorResponse);
     });
   }
 

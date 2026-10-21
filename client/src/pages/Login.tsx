@@ -73,9 +73,18 @@ export default function Login() {
       const next = searchParams.get('next');
       navigate(next && next.startsWith('/') && !next.startsWith('//') ? next : '/', { replace: true });
     } catch (error) {
-      const message =
-        (error as { response?: { data?: { error?: string } } })?.response?.data?.error ||
-        'Login failed. Please try again.';
+      const response = (
+        error as {
+          response?: { status?: number; data?: { error?: string; code?: string } };
+        }
+      )?.response;
+      const message = response?.data?.error || 'Login failed. Please try again.';
+      // Keep the toast human-readable; log the stable code (and status) so bug
+      // reports can identify the exact failure path without guessing.
+      console.error('[siren] Login failed:', {
+        code: response?.data?.code,
+        status: response?.status,
+      });
       toast.error(message);
     } finally {
       setLoading(false);

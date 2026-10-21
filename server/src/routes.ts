@@ -1,7 +1,13 @@
 import { Router, Request, Response, NextFunction, raw, json } from 'express';
 import axios, { AxiosError, AxiosResponse } from 'axios';
 import rateLimit from 'express-rate-limit';
-import { LoginRequest, JellyfinAuthResponse, LoginSuccessResponse } from './types';
+import {
+  ErrorCode,
+  LoginRequest,
+  JellyfinAuthResponse,
+  LoginSuccessResponse,
+} from './types';
+import type { ErrorResponse } from './types';
 import {
   createSession,
   deleteSession,
@@ -13,6 +19,12 @@ import {
 } from './session';
 
 const router = Router();
+
+/** Sends the shared `{error, code}` failure shape with an unchanged message. */
+function sendError(res: Response, status: number, error: string, code: ErrorCode): Response {
+  const body: ErrorResponse = { error, code };
+  return res.status(status).json(body);
+}
 
 const CLIENT_NAME = 'Siren';
 // Kept in sync with the app version via the SIREN_APP_VERSION esbuild define
@@ -103,7 +115,10 @@ const loginLimiter = rateLimit({
   limit: 20, // 20 login attempts per 15 min per IP
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { error: 'Too many login attempts. Please try again later.' },
+  message: {
+    error: 'Too many login attempts. Please try again later.',
+    code: ErrorCode.RATE_LIMITED,
+  } satisfies ErrorResponse,
 });
 
 // ---------------------------------------------------------------------------
@@ -119,16 +134,16 @@ router.post(
     const { serverUrl, username, password, deviceId } = req.body as LoginRequest;
 
     if (!serverUrl || !username || !password || !deviceId) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return sendError(res, 400, 'Missing required fields', ErrorCode.AUTH_MISSING_FIELDS);
     }
 
     if (typeof deviceId !== 'string' || !DEVICE_ID_RE.test(deviceId)) {
-      return res.status(400).json({ error: 'Invalid device ID' });
+      return sendError(res, 400, 'Invalid device ID', ErrorCode.AUTH_BAD_DEVICE_ID);
     }
 
     const validatedUrl = validateServerUrl(serverUrl);
     if (!validatedUrl) {
-      return res.status(400).json({ error: 'Invalid server URL' });
+      return sendError(res, 400, 'Invalid server URL', ErrorCode.AUTH_BAD_URL);
     }
 
     try {
@@ -159,7 +174,12 @@ router.post(
         typeof data.User.Id !== 'string' ||
         typeof data.User.Name !== 'string'
       ) {
-        return res.status(502).json({ error: 'Unexpected response from Jellyfin server' });
+        return sendError(
+          res,
+          502,
+          'Unexpected response from Jellyfin server',
+          ErrorCode.UPSTREAM_BAD_RESPONSE
+        );
       }
 
       const { session, replaced } = createSession({
@@ -203,22 +223,54 @@ router.post(
       return res.json(result);
     } catch (error) {
       const axiosError = error as AxiosError;
+      // Server-side diagnostics only: the axios code separates DNS/TLS/refused
+      // failures, and the status identifies upstream HTTP errors. Never log or
+      // return the upstream body — it may contain server internals.
+      console.warn('[siren] Login upstream failure:', {
+        code: axiosError.code,
+        status: axiosError.response?.status,
+      });
       if (axiosError.response) {
         const status = axiosError.response.status;
         if (status === 401) {
-          return res.status(401).json({ error: 'Invalid username or password' });
+          return sendError(
+            res,
+            401,
+            'Invalid username or password',
+            ErrorCode.AUTH_BAD_CREDENTIALS
+          );
         }
         if (status === 404) {
-          return res.status(404).json({ error: 'Server not found — check the URL' });
+          return sendError(
+            res,
+            404,
+            'Server not found — check the URL',
+            ErrorCode.AUTH_SERVER_NOT_FOUND
+          );
         }
         // Don't reflect arbitrary upstream statuses (may leak internals);
         // normalize to a generic bad-gateway.
-        return res.status(502).json({ error: 'Jellyfin server error — please try again' });
+        return sendError(
+          res,
+          502,
+          'Jellyfin server error — please try again',
+          ErrorCode.UPSTREAM_BAD_GATEWAY
+        );
       }
       if (axiosError.code === 'ECONNABORTED') {
-        return res.status(504).json({ error: 'Server unreachable — check the URL and try again' });
+        return sendError(
+          res,
+          504,
+          'Server unreachable — check the URL and try again',
+          ErrorCode.UPSTREAM_TIMEOUT
+        );
       }
-      return res.status(502).json({ error: 'Server unreachable — check the URL and try again' });
+      return sendError(
+        res,
+        502,
+        'Server unreachable — check the URL and try again',
+        ErrorCode.UPSTREAM_UNREACHABLE
+      );
     }
   }
 );
@@ -231,7 +283,7 @@ router.get('/auth/session', (req: Request, res: Response) => {
   const sessionId = cookies[SESSION_COOKIE_NAME];
   const session = sessionId ? getSession(sessionId) : null;
   if (!session) {
-    return res.status(401).json({ error: 'Not authenticated' });
+    return sendError(res, 401, 'Not authenticated', ErrorCode.NOT_AUTHENTICATED);
   }
   // Browsers never report cookie age back, so reissue on every probe to keep
   // the cookie's Max-Age aligned with the server's sliding session TTL.
