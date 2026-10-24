@@ -245,7 +245,7 @@ export default function PlaylistView() {
 
             return (
               <div
-                key={track.Id}
+                key={track.PlaylistItemId ?? track.Id}
                 className={cn(
                   'group flex cursor-pointer items-center gap-4 rounded-md px-4 py-2 transition-colors',
                   isCurrent ? 'bg-secondary' : 'hover:bg-secondary/50'

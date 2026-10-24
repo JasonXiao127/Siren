@@ -28,12 +28,18 @@ export default function LikeButton({ itemId, isFavorite, className }: LikeButton
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['favorites'] }),
         queryClient.invalidateQueries({ queryKey: ['playlists'] }),
+        queryClient.invalidateQueries({ queryKey: ['playlist'] }),
         queryClient.invalidateQueries({ queryKey: ['recently-added'] }),
         queryClient.invalidateQueries({ queryKey: ['recently-played'] }),
         queryClient.invalidateQueries({ queryKey: ['frequently-played'] }),
         queryClient.invalidateQueries({ queryKey: ['search'] }),
         queryClient.invalidateQueries({ queryKey: ['playlist-tracks'] }),
         queryClient.invalidateQueries({ queryKey: ['album-tracks'] }),
+        // Album/artist headers and grids carry UserData.IsFavorite too.
+        queryClient.invalidateQueries({ queryKey: ['album'] }),
+        queryClient.invalidateQueries({ queryKey: ['albums'] }),
+        queryClient.invalidateQueries({ queryKey: ['artist'] }),
+        queryClient.invalidateQueries({ queryKey: ['artist-albums'] }),
       ]);
     } catch {
       toast.error('Could not update favorite');
@@ -54,6 +60,8 @@ export default function LikeButton({ itemId, isFavorite, className }: LikeButton
         className
       )}
       title={isFavorite ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
+      aria-label={isFavorite ? 'Remove from Liked Songs' : 'Add to Liked Songs'}
+      aria-pressed={isFavorite}
     >
       <Heart
         className={cn('h-4 w-4', isFavorite && 'fill-current')}

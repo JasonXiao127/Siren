@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Plus, Check } from 'lucide-react';
@@ -40,6 +40,9 @@ export default function AddToPlaylistDialog({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [isAdding, setIsAdding] = useState(false);
+  // Ref guard: state updates are async, so two Enter presses in quick
+  // succession can both observe isAdding === false and create duplicates.
+  const addingRef = useRef(false);
 
   const { data: playlists } = useQuery({
     queryKey: ['playlists', userId],
@@ -54,13 +57,17 @@ export default function AddToPlaylistDialog({
   );
 
   function reset() {
+    // Do NOT clear addingRef here: closing the dialog while a request is in
+    // flight must not allow a reopen to start a second, duplicate request.
+    // Only the request's own finally (or a new request's beginning) may.
     setSelectedId(null);
     setNewName('');
     setIsAdding(false);
   }
 
   async function handleAddToSelected() {
-    if (!userId || !selectedId || trackIds.length === 0) return;
+    if (!userId || !selectedId || trackIds.length === 0 || addingRef.current) return;
+    addingRef.current = true;
     setIsAdding(true);
     try {
       const existing = await getPlaylistTracks(userId, selectedId);
@@ -83,12 +90,14 @@ export default function AddToPlaylistDialog({
       console.error('Failed to add tracks to playlist', error);
       toast.error('Could not add songs to playlist');
     } finally {
+      addingRef.current = false;
       setIsAdding(false);
     }
   }
 
   async function handleCreateAndAdd() {
-    if (!userId || !newName.trim() || trackIds.length === 0) return;
+    if (!userId || !newName.trim() || trackIds.length === 0 || addingRef.current) return;
+    addingRef.current = true;
     setIsAdding(true);
     try {
       const newId = await createPlaylist(userId, newName.trim());
@@ -101,6 +110,7 @@ export default function AddToPlaylistDialog({
       console.error('Failed to create playlist and add tracks', error);
       toast.error('Could not create playlist');
     } finally {
+      addingRef.current = false;
       setIsAdding(false);
     }
   }

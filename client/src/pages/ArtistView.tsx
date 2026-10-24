@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
@@ -15,6 +16,8 @@ export default function ArtistView() {
   const navigate = useNavigate();
   const userId = useAuthStore((state) => state.userId);
   const playQueue = usePlayerStore((state) => state.playQueue);
+  // Last-click-wins: ignore a stale album fetch that resolves after a newer one.
+  const playRequestId = useRef(0);
 
   const { data: artist } = useQuery({
     queryKey: ['artist', userId, id],
@@ -29,14 +32,18 @@ export default function ArtistView() {
   });
 
   async function handlePlayAlbum(albumId: string) {
+    const requestId = ++playRequestId.current;
     try {
       const tracks = await getAlbumTracks(userId, albumId);
+      if (requestId !== playRequestId.current) return;
       if (tracks.length > 0) {
         playQueue(tracks, 0);
       }
     } catch (error) {
       console.error('Failed to load album tracks', error);
-      toast.error('Could not load album tracks');
+      if (requestId === playRequestId.current) {
+        toast.error('Could not load album tracks');
+      }
     }
   }
 

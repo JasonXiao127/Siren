@@ -40,7 +40,13 @@ import path from 'path';
 const APP_SCHEME = 'app';
 const APP_ORIGIN = 'app://siren';
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || '';
-const IS_DEV = !!DEV_SERVER_URL;
+// Never allow an ambient dev-server URL to flip a packaged build into dev
+// mode: that would load remote code, disable the loopback token guard, and
+// bind a fixed port instead of an ephemeral one.
+const IS_DEV = !!DEV_SERVER_URL && !app.isPackaged;
+if (DEV_SERVER_URL && app.isPackaged) {
+  console.warn('[siren] Ignoring VITE_DEV_SERVER_URL in a packaged build');
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -93,9 +99,10 @@ function scheduleRespawn(): void {
     respawnScheduled = false;
     if (!quitting) {
       startServerChild().catch((err) => {
-        // Timed out waiting for ready — the stuck child was killed and its
-        // exit handler will schedule the next attempt.
         console.error(err.message);
+        // A fork() throw produces no child, so no exit event will schedule
+        // the next attempt; a pre-ready exit is handled by the exit listener.
+        if (!quitting && !serverProcess) scheduleRespawn();
       });
     }
   }, delay);
@@ -128,12 +135,22 @@ function startServerChild(): Promise<number> {
       NODE_ENV: IS_DEV ? 'development' : 'production',
       SIREN_DATA_DIR: app.getPath('userData'),
       SIREN_LOG_FILE: path.join(app.getPath('userData'), 'logs', 'siren.log'),
+      // Never inherit deployment-specific config from the launching shell.
+      // A stray BASE_PATH would mount the API somewhere the client never
+      // requests; a stray SIREN_PORT would replace the ephemeral port; a
+      // stray SIREN_TOKEN would break dev (Vite's proxy cannot send it).
+      SIREN_PORT: IS_DEV ? '5176' : '0',
+    };
+    delete env.BASE_PATH;
+    delete env.VITE_BASE_PATH;
+    if (IS_DEV) {
       // Dev skips the loopback token: the renderer talks to the server via
       // Vite's /api proxy, which can't know the per-launch token. Loopback
       // bind alone is acceptable protection for a dev session.
-      ...(!IS_DEV ? { SIREN_TOKEN: serverToken } : {}),
-      ...(IS_DEV ? { SIREN_PORT: '5176' } : {}),
-    };
+      delete env.SIREN_TOKEN;
+    } else {
+      env.SIREN_TOKEN = serverToken;
+    }
 
     const timer = setTimeout(() => {
       settleReject(new Error('[siren] Server process failed to report ready within 10s'));
@@ -189,7 +206,14 @@ function startServerChild(): Promise<number> {
       settleReject(new Error(`[siren] Server exited before ready (code ${code})`));
 
       if (quitting) return;
-      if (!hadReady) return;
+      if (!hadReady) {
+        // A respawned child that dies before reporting ready has no awaiter
+        // (the boot promise was settled above), so nothing else would retry.
+        // Keep the backoff going; the initial boot is awaited by the app and
+        // shows a dialog instead.
+        if (respawnAttempts > 0) scheduleRespawn();
+        return;
+      }
 
       // Unexpected death — respawn with backoff so a transient crash
       // doesn't take the whole app down.

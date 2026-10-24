@@ -27,6 +27,9 @@ const children = new Set();
 let shuttingDown = false;
 let electronProc = null;
 let restarting = false;
+// Increments for every Electron launch. A stale process's exit handler must
+// not shut down a session that has already been replaced by a newer launch.
+let electronGeneration = 0;
 
 function log(prefix, message) {
   console.log(`[${prefix}] ${message}`);
@@ -36,6 +39,9 @@ function spawnChild(command, args, options = {}) {
   const child = spawn(command, args, {
     cwd: rootDir,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // POSIX: make the child a process-group leader so teardown can signal
+    // npm -> node/vite (and Electron -> utilityProcess) grandchildren too.
+    detached: process.platform !== 'win32',
     ...options,
   });
   children.add(child);
@@ -60,8 +66,18 @@ function waitForUrl(url, timeoutMs = 30000) {
     const attempt = () => {
       const req = http.get(url, (res) => {
         res.resume();
-        resolve();
+        const ok = !!res.statusCode && res.statusCode >= 200 && res.statusCode < 400;
+        if (ok) {
+          resolve();
+        } else if (Date.now() - started > timeoutMs) {
+          reject(new Error(`Timed out waiting for ${url} (last status ${res.statusCode})`));
+        } else {
+          setTimeout(attempt, 400);
+        }
       });
+      // A stalled socket (accepted but never answered) must not hang the
+      // orchestrator before Electron starts.
+      req.setTimeout(5000, () => req.destroy(new Error('socket timeout')));
       req.on('error', () => {
         if (Date.now() - started > timeoutMs) {
           reject(new Error(`Timed out waiting for ${url}`));
@@ -98,12 +114,17 @@ const rebuildPlugin = {
 
 async function startElectron() {
   if (shuttingDown) return;
-  electronProc = spawnChild(electronBinary, ['.'], {
+  const generation = ++electronGeneration;
+  const proc = spawnChild(electronBinary, ['.'], {
     env: { ...process.env, VITE_DEV_SERVER_URL: DEV_SERVER_URL, NODE_ENV: 'development' },
   });
-  pipeStdio(electronProc, 'electron');
-  electronProc.on('exit', (code) => {
-    electronProc = null;
+  electronProc = proc;
+  pipeStdio(proc, 'electron');
+  proc.on('exit', (code) => {
+    // Only clear the current reference; a stale process must not null out a
+    // newer one that has already replaced it.
+    if (electronProc === proc) electronProc = null;
+    if (generation !== electronGeneration) return; // superseded by a restart
     // User closed the window — treat as "dev session over".
     if (!restarting && !shuttingDown) {
       log('dev', `Electron exited (code ${code}) — shutting down`);
@@ -141,12 +162,20 @@ async function main() {
       restarting = true;
       log('dev', 'Bundle changed — restarting Electron');
       const proc = electronProc;
-      killTree(proc);
-      await new Promise((resolve) => {
-        if (!proc || proc.exitCode !== null) return resolve();
-        proc.once('exit', resolve);
-        setTimeout(resolve, 2000);
-      });
+      if (proc) {
+        // Invalidate this process's exit handler before killing it so a slow
+        // shutdown cannot tear down the replacement started below.
+        electronGeneration += 1;
+        electronProc = null;
+        killTree(proc);
+        await new Promise((resolve) => {
+          if (proc.exitCode !== null) return resolve();
+          proc.once('exit', resolve);
+          // Electron's own graceful quit allows up to 3s for the server
+          // child to flush; wait past that before replacing it.
+          setTimeout(resolve, 3500);
+        });
+      }
       restarting = false;
       startElectron();
     }, 300);
@@ -179,24 +208,47 @@ async function main() {
   setInterval(() => {}, 1 << 30);
 }
 
-function killTree(child) {
+function killTree(child, signal = 'SIGTERM') {
   if (!child || child.exitCode !== null) return;
   if (process.platform === 'win32') {
     // child.kill() on Windows only terminates the direct process — a
     // shell:true spawn (npm.cmd → node/vite) leaves grandchildren running
     // and holding ports. taskkill /T takes the whole tree.
     spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-  } else {
-    child.kill('SIGTERM');
+    return;
+  }
+  try {
+    // Negative PID signals the whole process group (spawnChild is detached).
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // already gone
+    }
   }
 }
 
 async function shutdown(code) {
   if (shuttingDown) return;
   shuttingDown = true;
+  const pending = [...children];
+  for (const child of pending) {
+    try {
+      killTree(child, 'SIGTERM');
+    } catch {
+      // already gone
+    }
+  }
+  // Give children (Electron's server child flushes sessions) a moment to
+  // exit, then force-kill anything still holding a port.
+  const deadline = Date.now() + 3000;
+  while (children.size > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   for (const child of children) {
     try {
-      killTree(child);
+      killTree(child, 'SIGKILL');
     } catch {
       // already gone
     }

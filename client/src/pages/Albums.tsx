@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -23,6 +23,8 @@ export default function Albums() {
   const playQueue = usePlayerStore((state) => state.playQueue);
   const [addToPlaylistTrackIds, setAddToPlaylistTrackIds] = useState<string[] | null>(null);
   const [loadingAlbumId, setLoadingAlbumId] = useState<string | null>(null);
+  // Last-click-wins: ignore a stale play fetch that resolves after a newer one.
+  const playRequestId = useRef(0);
 
   const { data: albums, isLoading } = useQuery({
     queryKey: ['albums', userId],
@@ -31,14 +33,18 @@ export default function Albums() {
   });
 
   async function handlePlayAlbum(albumId: string) {
+    const requestId = ++playRequestId.current;
     try {
       const tracks = await getAlbumTracks(userId, albumId);
+      if (requestId !== playRequestId.current) return;
       if (tracks.length > 0) {
         playQueue(tracks, 0);
       }
     } catch (error) {
       console.error('Failed to load album tracks', error);
-      toast.error('Could not load album tracks');
+      if (requestId === playRequestId.current) {
+        toast.error('Could not load album tracks');
+      }
     }
   }
 
@@ -47,9 +53,14 @@ export default function Albums() {
     setLoadingAlbumId(albumId);
     try {
       const tracks = await getAlbumTracks(userId, albumId);
+      if (tracks.length === 0) {
+        toast.error('This album has no songs to add');
+        return;
+      }
       setAddToPlaylistTrackIds(tracks.map((t) => t.Id));
     } catch (error) {
       console.error('Failed to load album tracks', error);
+      toast.error('Could not load album tracks');
     } finally {
       setLoadingAlbumId(null);
     }

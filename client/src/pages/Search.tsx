@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -24,6 +25,9 @@ export default function Search() {
   const userId = useAuthStore((state) => state.userId);
   const playQueue = usePlayerStore((state) => state.playQueue);
   const playSingle = usePlayerStore((state) => state.playSingle);
+  // Only the most recent album-play request may start playback; a slow earlier
+  // fetch must not override the album the user clicked last.
+  const playRequestId = useRef(0);
 
   const { data: results, isLoading } = useQuery({
     queryKey: ['search', userId, query],
@@ -36,14 +40,18 @@ export default function Search() {
   }
 
   async function handlePlayAlbum(albumId: string) {
+    const requestId = ++playRequestId.current;
     try {
       const tracks = await getAlbumTracks(userId, albumId);
+      if (requestId !== playRequestId.current) return;
       if (tracks.length > 0) {
         playQueue(tracks, 0);
       }
     } catch (error) {
       console.error('Failed to load album tracks', error);
-      toast.error('Could not load album tracks');
+      if (requestId === playRequestId.current) {
+        toast.error('Could not load album tracks');
+      }
     }
   }
 

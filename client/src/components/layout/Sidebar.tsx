@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -15,6 +15,9 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const [isCreating, setIsCreating] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
+  // Ref guard (not just state): a rapid Enter + click must not create twice.
+  const creatingRef = useRef(false);
+  const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
 
   const { data: playlists, isLoading } = useQuery({
     queryKey: ['playlists', userId],
@@ -24,8 +27,10 @@ export default function Sidebar() {
 
   async function handleCreatePlaylist() {
     const name = newPlaylistName.trim();
-    if (!name || !userId) return;
+    if (!name || !userId || creatingRef.current) return;
 
+    creatingRef.current = true;
+    setIsCreatingPlaylist(true);
     try {
       const newId = await createPlaylist(userId, name);
       await queryClient.invalidateQueries({ queryKey: ['playlists'] });
@@ -35,6 +40,9 @@ export default function Sidebar() {
     } catch {
       toast.error('Could not create playlist');
       // Keep the input open so the user can retry
+    } finally {
+      creatingRef.current = false;
+      setIsCreatingPlaylist(false);
     }
   }
 
@@ -105,6 +113,7 @@ export default function Sidebar() {
             <input
               autoFocus
               value={newPlaylistName}
+              disabled={isCreatingPlaylist}
               onChange={(e) => setNewPlaylistName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void handleCreatePlaylist();
@@ -118,7 +127,8 @@ export default function Sidebar() {
             />
             <button
               onClick={() => void handleCreatePlaylist()}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              disabled={isCreatingPlaylist}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
               title="Create"
             >
               <Check className="h-4 w-4" />
