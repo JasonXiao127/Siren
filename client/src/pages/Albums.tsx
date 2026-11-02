@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { getAlbums, getAlbumTracks, buildImageUrl } from '@/api/jellyfin';
+import { useMusicLibraryId } from '@/hooks/useMusicLibrary';
+import { describeQueryError } from '@/lib/queryError';
 import { Artwork } from '@/components/common/Artwork';
 import { LoadingSkeleton } from '@/components/common/LoadingSkeleton';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -25,11 +27,18 @@ export default function Albums() {
   const [loadingAlbumId, setLoadingAlbumId] = useState<string | null>(null);
   // Last-click-wins: ignore a stale play fetch that resolves after a newer one.
   const playRequestId = useRef(0);
+  const { musicLibraryId, viewsReady } = useMusicLibraryId(userId);
 
-  const { data: albums, isLoading } = useQuery({
-    queryKey: ['albums', userId],
-    queryFn: () => getAlbums(userId),
-    enabled: !!userId,
+  const {
+    data: albums,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ['albums', userId, musicLibraryId],
+    queryFn: () => getAlbums(userId, musicLibraryId),
+    enabled: !!userId && viewsReady,
   });
 
   async function handlePlayAlbum(albumId: string) {
@@ -70,8 +79,21 @@ export default function Albums() {
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Albums</h1>
 
-      {isLoading ? (
+      {isLoading || !viewsReady ? (
         <LoadingSkeleton />
+      ) : isError ? (
+        <EmptyState
+          title="Couldn't load albums"
+          description={describeQueryError(error)}
+          action={
+            <button
+              onClick={() => void refetch()}
+              className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+            >
+              Retry
+            </button>
+          }
+        />
       ) : !albums || albums.length === 0 ? (
         <EmptyState
           title="No albums found"

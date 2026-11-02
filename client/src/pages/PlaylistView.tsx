@@ -15,6 +15,7 @@ import {
 import { Artwork } from '@/components/common/Artwork';
 import { LoadingSkeleton } from '@/components/common/LoadingSkeleton';
 import { EmptyState } from '@/components/common/EmptyState';
+import { describeQueryError } from '@/lib/queryError';
 import LikeButton from '@/components/common/LikeButton';
 import AddToPlaylistDialog from '@/components/player/AddToPlaylistDialog';
 import {
@@ -59,7 +60,7 @@ export default function PlaylistView() {
     enabled: !!userId && !!id,
   });
 
-  const { data: tracks, isLoading } = useQuery({
+  const { data: tracks, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['playlist-tracks', userId, id],
     queryFn: () => getPlaylistTracks(userId, id!),
     enabled: !!userId && !!id,
@@ -221,6 +222,19 @@ export default function PlaylistView() {
       {/* Track list */}
       {isLoading ? (
         <LoadingSkeleton variant="list" count={10} />
+      ) : isError ? (
+        <EmptyState
+          title="Couldn't load playlist songs"
+          description={describeQueryError(error)}
+          action={
+            <button
+              onClick={() => void refetch()}
+              className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+            >
+              Retry
+            </button>
+          }
+        />
       ) : !tracks || tracks.length === 0 ? (
         <EmptyState
           title="This playlist is empty"

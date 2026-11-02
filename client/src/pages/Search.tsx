@@ -12,6 +12,8 @@ import {
   getAlbumTracks,
   type JellyfinItem,
 } from '@/api/jellyfin';
+import { useMusicLibraryId } from '@/hooks/useMusicLibrary';
+import { describeQueryError } from '@/lib/queryError';
 import { Artwork } from '@/components/common/Artwork';
 import { LoadingSkeleton } from '@/components/common/LoadingSkeleton';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -28,11 +30,12 @@ export default function Search() {
   // Only the most recent album-play request may start playback; a slow earlier
   // fetch must not override the album the user clicked last.
   const playRequestId = useRef(0);
+  const { musicLibraryId, viewsReady } = useMusicLibraryId(userId);
 
-  const { data: results, isLoading } = useQuery({
-    queryKey: ['search', userId, query],
-    queryFn: () => searchMusic(userId, query),
-    enabled: !!userId && query.length > 0,
+  const { data: results, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['search', userId, query, musicLibraryId],
+    queryFn: () => searchMusic(userId, query, musicLibraryId),
+    enabled: !!userId && query.length > 0 && viewsReady,
   });
 
   function handlePlayTrack(track: JellyfinItem) {
@@ -73,8 +76,21 @@ export default function Search() {
         Results for &ldquo;{query}&rdquo;
       </h1>
 
-      {isLoading ? (
+      {isLoading || !viewsReady ? (
         <LoadingSkeleton />
+      ) : isError ? (
+        <EmptyState
+          title="Search failed"
+          description={describeQueryError(error)}
+          action={
+            <button
+              onClick={() => void refetch()}
+              className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+            >
+              Retry
+            </button>
+          }
+        />
       ) : !results || results.length === 0 ? (
         <EmptyState
           title="No results found"

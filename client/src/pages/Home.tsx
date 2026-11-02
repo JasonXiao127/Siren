@@ -8,6 +8,8 @@ import {
   getFrequentlyPlayed,
   buildTrackImageUrl,
 } from '@/api/jellyfin';
+import { useMusicLibraryId } from '@/hooks/useMusicLibrary';
+import { describeQueryError } from '@/lib/queryError';
 import { Artwork } from '@/components/common/Artwork';
 import { LoadingSkeleton } from '@/components/common/LoadingSkeleton';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -26,24 +28,52 @@ export default function Home() {
   const playQueue = usePlayerStore((state) => state.playQueue);
   const playSingle = usePlayerStore((state) => state.playSingle);
   const [addToPlaylistTrack, setAddToPlaylistTrack] = useState<Track | null>(null);
+  // Scope music queries to the music library once resolved. Data queries wait
+  // for views so the first request is already scoped — an unscoped recursive
+  // /Items query is the expensive path on Jellyfin 12.
+  const { musicLibraryId, viewsReady } = useMusicLibraryId(userId);
+  const dataEnabled = !!userId && viewsReady;
 
-  const { data: recentlyAdded, isLoading: recentlyAddedLoading } = useQuery({
-    queryKey: ['recently-added', userId],
-    queryFn: () => getRecentlyAdded(userId),
-    enabled: !!userId,
+  const {
+    data: recentlyAdded,
+    isLoading: recentlyAddedLoading,
+    isError: recentlyAddedError,
+    error: recentlyAddedErr,
+    refetch: refetchRecentlyAdded,
+  } = useQuery({
+    queryKey: ['recently-added', userId, musicLibraryId],
+    queryFn: () => getRecentlyAdded(userId, musicLibraryId),
+    enabled: dataEnabled,
   });
 
-  const { data: recentlyPlayed, isLoading: recentlyLoading } = useQuery({
-    queryKey: ['recently-played', userId],
-    queryFn: () => getRecentlyPlayed(userId),
-    enabled: !!userId,
+  const {
+    data: recentlyPlayed,
+    isLoading: recentlyLoading,
+    isError: recentlyError,
+    error: recentlyErr,
+    refetch: refetchRecently,
+  } = useQuery({
+    queryKey: ['recently-played', userId, musicLibraryId],
+    queryFn: () => getRecentlyPlayed(userId, musicLibraryId),
+    enabled: dataEnabled,
   });
 
-  const { data: frequentlyPlayed, isLoading: frequentlyLoading } = useQuery({
-    queryKey: ['frequently-played', userId],
-    queryFn: () => getFrequentlyPlayed(userId),
-    enabled: !!userId,
+  const {
+    data: frequentlyPlayed,
+    isLoading: frequentlyLoading,
+    isError: frequentlyError,
+    error: frequentlyErr,
+    refetch: refetchFrequently,
+  } = useQuery({
+    queryKey: ['frequently-played', userId, musicLibraryId],
+    queryFn: () => getFrequentlyPlayed(userId, musicLibraryId),
+    enabled: dataEnabled,
   });
+
+  // While UserViews is pending the data queries are still disabled — show
+  // skeletons instead of empty states so a slow library lookup never flashes
+  // "No music found".
+  const viewsLoading = !viewsReady;
 
   function handlePlayAll(tracks: Track[]) {
     if (tracks && tracks.length > 0) {
@@ -72,8 +102,21 @@ export default function Home() {
           )}
         </div>
 
-        {recentlyLoading ? (
+        {recentlyLoading || viewsLoading ? (
           <LoadingSkeleton />
+        ) : recentlyError ? (
+          <EmptyState
+            title="Couldn't load recently played"
+            description={describeQueryError(recentlyErr)}
+            action={
+              <button
+                onClick={() => void refetchRecently()}
+                className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+              >
+                Retry
+              </button>
+            }
+          />
         ) : !recentlyPlayed || recentlyPlayed.length === 0 ? (
           <EmptyState
             title="Nothing played yet"
@@ -103,8 +146,21 @@ export default function Home() {
           )}
         </div>
 
-        {frequentlyLoading ? (
+        {frequentlyLoading || viewsLoading ? (
           <LoadingSkeleton />
+        ) : frequentlyError ? (
+          <EmptyState
+            title="Couldn't load frequently played"
+            description={describeQueryError(frequentlyErr)}
+            action={
+              <button
+                onClick={() => void refetchFrequently()}
+                className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+              >
+                Retry
+              </button>
+            }
+          />
         ) : !frequentlyPlayed || frequentlyPlayed.length === 0 ? (
           <EmptyState
             title="No frequently played songs"
@@ -134,8 +190,21 @@ export default function Home() {
           )}
         </div>
 
-        {recentlyAddedLoading ? (
+        {recentlyAddedLoading || viewsLoading ? (
           <LoadingSkeleton />
+        ) : recentlyAddedError ? (
+          <EmptyState
+            title="Couldn't load recently added"
+            description={describeQueryError(recentlyAddedErr)}
+            action={
+              <button
+                onClick={() => void refetchRecentlyAdded()}
+                className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+              >
+                Retry
+              </button>
+            }
+          />
         ) : !recentlyAdded || recentlyAdded.length === 0 ? (
           <EmptyState
             title="No music found"

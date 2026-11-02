@@ -6,6 +6,8 @@ import { toast } from 'sonner';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { getArtistAlbums, getItem, buildImageUrl, getAlbumTracks } from '@/api/jellyfin';
+import { useMusicLibraryId } from '@/hooks/useMusicLibrary';
+import { describeQueryError } from '@/lib/queryError';
 import { Artwork } from '@/components/common/Artwork';
 import { LoadingSkeleton } from '@/components/common/LoadingSkeleton';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -18,6 +20,7 @@ export default function ArtistView() {
   const playQueue = usePlayerStore((state) => state.playQueue);
   // Last-click-wins: ignore a stale album fetch that resolves after a newer one.
   const playRequestId = useRef(0);
+  const { musicLibraryId, viewsReady } = useMusicLibraryId(userId);
 
   const { data: artist } = useQuery({
     queryKey: ['artist', userId, id],
@@ -25,10 +28,10 @@ export default function ArtistView() {
     enabled: !!userId && !!id,
   });
 
-  const { data: albums, isLoading } = useQuery({
-    queryKey: ['artist-albums', userId, id],
-    queryFn: () => getArtistAlbums(userId, id!),
-    enabled: !!userId && !!id,
+  const { data: albums, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['artist-albums', userId, id, musicLibraryId],
+    queryFn: () => getArtistAlbums(userId, id!, musicLibraryId),
+    enabled: !!userId && !!id && viewsReady,
   });
 
   async function handlePlayAlbum(albumId: string) {
@@ -71,8 +74,21 @@ export default function ArtistView() {
       </div>
 
       {/* Albums */}
-      {isLoading ? (
+      {isLoading || !viewsReady ? (
         <LoadingSkeleton />
+      ) : isError ? (
+        <EmptyState
+          title="Couldn't load artist albums"
+          description={describeQueryError(error)}
+          action={
+            <button
+              onClick={() => void refetch()}
+              className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+            >
+              Retry
+            </button>
+          }
+        />
       ) : !albums || albums.length === 0 ? (
         <EmptyState
           title="No albums found"

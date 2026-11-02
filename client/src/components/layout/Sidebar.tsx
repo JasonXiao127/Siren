@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Home, ListMusic, Disc3, Heart, Plus, X, Check } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
 import { getPlaylists, createPlaylist, buildImageUrl } from '@/api/jellyfin';
+import { describeQueryError } from '@/lib/queryError';
 import { Artwork } from '@/components/common/Artwork';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
@@ -18,11 +19,27 @@ export default function Sidebar() {
   // Ref guard (not just state): a rapid Enter + click must not create twice.
   const creatingRef = useRef(false);
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
+  // Defer the playlists fetch past first paint: Home already fires UserViews
+  // + three music queries on boot, and the unscoped playlist listing walks
+  // Jellyfin's expensive playlist-visibility path. A short delay spreads the
+  // startup burst so a slow server doesn't fail everything at once.
+  const [playlistsDeferred, setPlaylistsDeferred] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setPlaylistsDeferred(true), 1500);
+    return () => clearTimeout(timer);
+  }, []);
 
-  const { data: playlists, isLoading } = useQuery({
+  const {
+    data: playlists,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['playlists', userId],
     queryFn: () => getPlaylists(userId),
-    enabled: !!userId,
+    enabled: !!userId && playlistsDeferred,
+    staleTime: 5 * 60 * 1000,
   });
 
   async function handleCreatePlaylist() {
@@ -146,7 +163,7 @@ export default function Sidebar() {
           </div>
         )}
 
-        {isLoading ? (
+        {isLoading || (!playlistsDeferred && !isError) ? (
           <div className="space-y-2 px-3">
             {Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3">
@@ -154,6 +171,16 @@ export default function Sidebar() {
                 <Skeleton className="h-4 flex-1" />
               </div>
             ))}
+          </div>
+        ) : isError ? (
+          <div className="px-3 py-2">
+            <p className="text-xs text-muted-foreground">{describeQueryError(error)}</p>
+            <button
+              onClick={() => void refetch()}
+              className="mt-1 text-xs font-medium text-primary hover:underline"
+            >
+              Retry
+            </button>
           </div>
         ) : (
           <div className="space-y-1">

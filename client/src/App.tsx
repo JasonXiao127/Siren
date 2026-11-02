@@ -19,6 +19,9 @@ import Favorites from '@/pages/Favorites';
 
 function ProtectedLayout() {
   const user = useAuthStore((state) => state.user);
+  const userId = useAuthStore((state) => state.userId);
+  const serverUrl = useAuthStore((state) => state.serverUrl);
+  const login = useAuthStore((state) => state.login);
   const logout = useAuthStore((state) => state.logout);
   const location = useLocation();
   const [queueOpen, setQueueOpen] = useState(false);
@@ -26,7 +29,10 @@ function ProtectedLayout() {
   const [validating, setValidating] = useState(true);
 
   // Validate the httpOnly server session on boot. LocalStorage alone would
-  // paint the authed shell with a dead cookie (flash + 401 storm).
+  // paint the authed shell with a dead cookie (flash + 401 storm). On success
+  // sync the server's user/serverUrl into the store: a stale persisted userId
+  // (e.g. after a server-side user recreate) would otherwise make every
+  // proxied Jellyfin call use the wrong id and fail as "empty library".
   useEffect(() => {
     let cancelled = false;
     if (!user) {
@@ -35,6 +41,19 @@ function ProtectedLayout() {
     }
     apiClient
       .get('/auth/session')
+      .then((res) => {
+        const sessionUser = res.data?.user as { id: string; name: string } | undefined;
+        const sessionServerUrl = res.data?.serverUrl as string | undefined;
+        if (
+          !cancelled &&
+          sessionUser &&
+          typeof sessionUser.id === 'string' &&
+          sessionServerUrl &&
+          (sessionUser.id !== userId || sessionServerUrl !== serverUrl)
+        ) {
+          login(sessionServerUrl, sessionUser.id, sessionUser);
+        }
+      })
       .catch(() => {
         logout();
       })
@@ -44,7 +63,7 @@ function ProtectedLayout() {
     return () => {
       cancelled = true;
     };
-  }, [user, logout]);
+  }, [user, userId, serverUrl, login, logout]);
 
   if (!user) {
     const next = encodeURIComponent(location.pathname + location.search);

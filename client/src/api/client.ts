@@ -52,8 +52,13 @@ apiClient.interceptors.response.use(
     // When a code is present, require both the Siren session-failure code and a
     // 401, so a relayed body carrying a coincidental code at another status
     // cannot force logout; untagged responses keep the status-only behavior.
+    // Only UPSTREAM_UNAUTHORIZED forces re-login (revoked token / password
+    // change). UPSTREAM_FORBIDDEN (denied library/item) stays visible as an
+    // error — re-login would not fix it and could trap restricted users in a
+    // login → 403 → logout loop.
     const isUnauthenticated = code
-      ? code === 'NOT_AUTHENTICATED' && status === 401
+      ? (code === 'NOT_AUTHENTICATED' && status === 401) ||
+        (code === 'UPSTREAM_UNAUTHORIZED' && (status === 502 || status === 401 || status === 403))
       : status === 401;
     if (isUnauthenticated && !isAuthRoute) {
       try {

@@ -46,6 +46,38 @@ export interface JellyfinArtistsResponse {
   TotalRecordCount: number;
 }
 
+export interface JellyfinView extends JellyfinItem {
+  CollectionType?: string;
+}
+
+/**
+ * Resolves the user's libraries. Needed to scope music queries to the music
+ * library's ParentId: unscoped recursive /Items queries force Jellyfin 12
+ * through its playlist-visibility path (one extra unpaged BaseItems ×
+ * LinkedChildren join per query), which allocates hundreds of MB and can OOM
+ * the server when large playlists exist. Scoped queries skip that path.
+ */
+export async function getUserViews(userId: string): Promise<JellyfinView[]> {
+  const response = await apiClient.get<{ Items: JellyfinView[] }>('/proxy/UserViews', {
+    params: {
+      userId,
+    },
+  });
+  return toArray(response.data?.Items);
+}
+
+/**
+ * Selects the single music library to scope queries to. Returns null when
+ * there is no music library or when there are several (scoping to one would
+ * silently hide the others — fall back to unscoped instead).
+ */
+export function selectMusicLibraryId(views: JellyfinView[] | undefined): string | null {
+  if (!views) return null;
+  const music = views.filter((v) => v.CollectionType === 'music');
+  if (music.length !== 1) return null;
+  return music[0]?.Id ?? null;
+}
+
 /**
  * Jellyfin responses are trusted only as far as their shape is verifiable —
  * a captive portal, proxy hiccup, or misbehaving server plugin must degrade
@@ -102,6 +134,7 @@ export async function getPlaylists(userId: string): Promise<JellyfinItem[]> {
       // instead of actual playlists.
       Recursive: true,
       Limit: 100,
+      EnableTotalRecordCount: false,
     },
   });
   return toArray(response.data?.Items);
@@ -111,19 +144,20 @@ export async function getPlaylistTracks(userId: string, playlistId: string): Pro
   return getChildTracks(userId, playlistId);
 }
 
-export async function getRecentlyAdded(userId: string): Promise<Track[]> {
+export async function getRecentlyAdded(userId: string, parentId?: string | null): Promise<Track[]> {
   const response = await apiClient.get<JellyfinItem[]>('/proxy/Items/Latest', {
     params: {
       userId,
       IncludeItemTypes: 'Audio',
       Limit: 24,
       Fields: 'PrimaryImageAspectRatio,DateCreated',
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray<Track>(response.data);
 }
 
-export async function getAlbums(userId: string): Promise<JellyfinItem[]> {
+export async function getAlbums(userId: string, parentId?: string | null): Promise<JellyfinItem[]> {
   const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
       userId,
@@ -132,12 +166,14 @@ export async function getAlbums(userId: string): Promise<JellyfinItem[]> {
       SortBy: 'SortName',
       SortOrder: 'Ascending',
       Limit: 200,
+      EnableTotalRecordCount: false,
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray(response.data?.Items);
 }
 
-export async function getFavorites(userId: string): Promise<Track[]> {
+export async function getFavorites(userId: string, parentId?: string | null): Promise<Track[]> {
   const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
       userId,
@@ -147,6 +183,8 @@ export async function getFavorites(userId: string): Promise<Track[]> {
       SortBy: 'SortName',
       SortOrder: 'Ascending',
       Limit: 200,
+      EnableTotalRecordCount: false,
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray<Track>(response.data?.Items);
@@ -170,7 +208,7 @@ export async function setFavorite(
   }
 }
 
-export async function getRecentlyPlayed(userId: string): Promise<Track[]> {
+export async function getRecentlyPlayed(userId: string, parentId?: string | null): Promise<Track[]> {
   const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
       userId,
@@ -180,12 +218,14 @@ export async function getRecentlyPlayed(userId: string): Promise<Track[]> {
       SortOrder: 'Descending',
       Limit: 24,
       Fields: 'PrimaryImageAspectRatio',
+      EnableTotalRecordCount: false,
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray<Track>(response.data?.Items);
 }
 
-export async function getFrequentlyPlayed(userId: string): Promise<Track[]> {
+export async function getFrequentlyPlayed(userId: string, parentId?: string | null): Promise<Track[]> {
   const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
       userId,
@@ -195,6 +235,8 @@ export async function getFrequentlyPlayed(userId: string): Promise<Track[]> {
       SortOrder: 'Descending',
       Limit: 24,
       Fields: 'PrimaryImageAspectRatio',
+      EnableTotalRecordCount: false,
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray<Track>(response.data?.Items);
@@ -267,7 +309,7 @@ export async function removeTracksFromPlaylist(
   });
 }
 
-export async function getArtists(userId: string): Promise<JellyfinArtist[]> {
+export async function getArtists(userId: string, parentId?: string | null): Promise<JellyfinArtist[]> {
   // Jellyfin 12 marks GET /Artists obsolete ("Use GetPersons") — it still
   // works, but Persons is the canonical path. PersonType values cover both
   // solo artists and album artists; the response shape ({Items}) is the same.
@@ -276,12 +318,14 @@ export async function getArtists(userId: string): Promise<JellyfinArtist[]> {
       userId,
       personTypes: 'Artist,AlbumArtist',
       Limit: 200,
+      EnableTotalRecordCount: false,
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray(response.data?.Items);
 }
 
-export async function searchMusic(userId: string, query: string): Promise<JellyfinItem[]> {
+export async function searchMusic(userId: string, query: string, parentId?: string | null): Promise<JellyfinItem[]> {
   const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
       userId,
@@ -289,6 +333,8 @@ export async function searchMusic(userId: string, query: string): Promise<Jellyf
       IncludeItemTypes: 'Audio,MusicAlbum',
       Recursive: true,
       Limit: 50,
+      EnableTotalRecordCount: false,
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray(response.data?.Items);
@@ -298,7 +344,7 @@ export async function getAlbumTracks(userId: string, albumId: string): Promise<T
   return getChildTracks(userId, albumId);
 }
 
-export async function getArtistAlbums(userId: string, artistId: string): Promise<JellyfinItem[]> {
+export async function getArtistAlbums(userId: string, artistId: string, parentId?: string | null): Promise<JellyfinItem[]> {
   const response = await apiClient.get<JellyfinItemsResponse>('/proxy/Items', {
     params: {
       userId,
@@ -307,6 +353,8 @@ export async function getArtistAlbums(userId: string, artistId: string): Promise
       Recursive: true,
       SortBy: 'ProductionYear',
       SortOrder: 'Ascending',
+      EnableTotalRecordCount: false,
+      ...(parentId ? { ParentId: parentId } : {}),
     },
   });
   return toArray(response.data?.Items);
@@ -331,6 +379,7 @@ async function getChildTracks(userId: string, parentId: string): Promise<Track[]
       IncludeItemTypes: 'Audio',
       SortBy: 'IndexNumber',
       SortOrder: 'Ascending',
+      EnableTotalRecordCount: false,
       // PlaylistItemId is returned on playlist children — needed to remove
       // specific song rows from a playlist later.
       Fields: 'IndexNumber,SortName,PlaylistItemId',

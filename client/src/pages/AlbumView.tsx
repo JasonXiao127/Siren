@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { getAlbumTracks, getItem, buildImageUrl, buildTrackImageUrl } from '@/api/jellyfin';
+import { describeQueryError } from '@/lib/queryError';
 import { Artwork } from '@/components/common/Artwork';
 import { LoadingSkeleton } from '@/components/common/LoadingSkeleton';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -25,7 +26,7 @@ export default function AlbumView() {
     enabled: !!userId && !!id,
   });
 
-  const { data: tracks, isLoading } = useQuery({
+  const { data: tracks, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['album-tracks', userId, id],
     queryFn: () => getAlbumTracks(userId, id!),
     enabled: !!userId && !!id,
@@ -95,6 +96,19 @@ export default function AlbumView() {
       {/* Track list */}
       {isLoading ? (
         <LoadingSkeleton variant="list" count={10} />
+      ) : isError ? (
+        <EmptyState
+          title="Couldn't load album tracks"
+          description={describeQueryError(error)}
+          action={
+            <button
+              onClick={() => void refetch()}
+              className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+            >
+              Retry
+            </button>
+          }
+        />
       ) : !tracks || tracks.length === 0 ? (
         <EmptyState
           title="No tracks found"

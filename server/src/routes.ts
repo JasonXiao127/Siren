@@ -333,6 +333,109 @@ function destroyStream(data: unknown): void {
   }
 }
 
+/**
+ * Buffers an upstream error stream (bounded) so JSON API failures can be
+ * normalized to Siren's `{error, code}` shape. Success bodies are never
+ * buffered — they stream straight through.
+ */
+function readUpstreamErrorText(data: unknown, maxBytes = 65536): Promise<string> {
+  return new Promise((resolve) => {
+    const stream = data as {
+      on?: (event: string, listener: (...args: never[]) => void) => void;
+      destroy?: () => void;
+    } | null;
+    if (!stream || typeof stream.on !== 'function') {
+      resolve('');
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try {
+        resolve(Buffer.concat(chunks).toString('utf8'));
+      } catch {
+        resolve('');
+      }
+    };
+    timer = setTimeout(finish, 5000);
+    timer.unref?.();
+    try {
+      stream.on('data', (chunk: unknown) => {
+        if (settled) return;
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ''));
+        bytes += buf.length;
+        if (bytes <= maxBytes) {
+          chunks.push(buf);
+        } else {
+          // Over budget — stop buffering, keep what we have.
+          finish();
+        }
+      });
+      stream.on('end', () => {
+        clearTimeout(timer);
+        finish();
+      });
+      stream.on('error', () => {
+        clearTimeout(timer);
+        finish();
+      });
+    } catch {
+      clearTimeout(timer);
+      finish();
+    }
+  });
+}
+
+/** Extracts a human-readable message from an upstream error body. */
+function extractUpstreamMessage(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const candidates = [
+      parsed['detail'],
+      parsed['title'],
+      parsed['message'],
+      parsed['error'],
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim().slice(0, 200);
+      }
+    }
+  } catch {
+    // Not JSON — fall through to plain-text handling.
+  }
+  // Strip HTML tags from error pages; truncate long bodies.
+  const plain = trimmed.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return plain ? plain.slice(0, 200) : null;
+}
+
+/**
+ * Sends a normalized upstream failure. Preserves 4xx statuses (so callers can
+ * distinguish "not found" from "server down") and maps 5xx to 502. The message
+ * always carries the upstream status so toasts and bug reports identify the
+ * failing hop without guessing.
+ */
+async function sendUpstreamError(
+  res: Response,
+  upstreamStatus: number,
+  data: unknown,
+  fallback: string
+): Promise<Response> {
+  const text = await readUpstreamErrorText(data);
+  destroyStream(data);
+  const detail = extractUpstreamMessage(text);
+  const mappedStatus = upstreamStatus >= 500 ? 502 : upstreamStatus;
+  const error = detail ? `${fallback} (Jellyfin ${upstreamStatus}): ${detail}` : `${fallback} (Jellyfin ${upstreamStatus})`;
+  return sendError(res, mappedStatus, error.slice(0, 300), ErrorCode.UPSTREAM_BAD_GATEWAY);
+}
+
 // ALL /api/proxy/:path(.*)?
 const PROXY_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 // Cheap pre-parse auth gate: raw() would buffer up to 10mb before the
@@ -341,7 +444,7 @@ const PROXY_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 
 function proxyPreAuth(req: Request, res: Response, next: NextFunction): void {
   const sessionId = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME];
   if (!sessionId) {
-    res.status(401).json({ error: 'Not authenticated' });
+    sendError(res, 401, 'Not authenticated', ErrorCode.NOT_AUTHENTICATED);
     return;
   }
   next();
@@ -362,7 +465,7 @@ router.all(
   const session = sessionId ? getSession(sessionId) : null;
 
   if (!session) {
-    return res.status(401).json({ error: 'Not authenticated' });
+    return sendError(res, 401, 'Not authenticated', ErrorCode.NOT_AUTHENTICATED);
   }
 
   const { serverUrl, token, deviceId } = session;
@@ -378,7 +481,7 @@ router.all(
 
   const validatedUrl = validateServerUrl(serverUrl);
   if (!validatedUrl) {
-    return res.status(403).json({ error: 'Forbidden: invalid or blocked server URL' });
+    return sendError(res, 403, 'Forbidden: invalid or blocked server URL', ErrorCode.FORBIDDEN);
   }
   const serverBasePath = validatedUrl.pathname.replace(/\/$/, '');
 
@@ -394,14 +497,14 @@ router.all(
   // Allow http→https upgrades on the same host:port (common Jellyfin setup),
   // never https→http downgrades.
   if (!isSameOriginOrUpgrade(validatedUrl, targetUrl)) {
-    return res.status(403).json({ error: 'Forbidden: invalid request path' });
+    return sendError(res, 403, 'Forbidden: invalid request path', ErrorCode.FORBIDDEN);
   }
   if (targetUrl.username || targetUrl.password) {
-    return res.status(403).json({ error: 'Forbidden: invalid request path' });
+    return sendError(res, 403, 'Forbidden: invalid request path', ErrorCode.FORBIDDEN);
   }
   // Prevent subpath escape (e.g. ../x escaping a /jellyfin base).
   if (serverBasePath && !targetUrl.pathname.startsWith(serverBasePath + '/') && targetUrl.pathname !== serverBasePath) {
-    return res.status(403).json({ error: 'Forbidden: invalid request path' });
+    return sendError(res, 403, 'Forbidden: invalid request path', ErrorCode.FORBIDDEN);
   }
 
   // Sanitize query params: strip any proxy-specific or legacy-auth params
@@ -485,20 +588,20 @@ router.all(
       }
       const validatedNext = nextUrl ? validateServerUrl(nextUrl.toString()) : null;
       if (!validatedNext) {
-        return res.status(502).json({ error: 'Bad gateway: upstream redirect target blocked' });
+        return sendError(res, 502, 'Bad gateway: upstream redirect target blocked', ErrorCode.UPSTREAM_BAD_GATEWAY);
       }
       if (!isSameOriginOrUpgrade(validatedUrl, validatedNext)) {
-        return res.status(502).json({ error: 'Bad gateway: upstream redirect target blocked' });
+        return sendError(res, 502, 'Bad gateway: upstream redirect target blocked', ErrorCode.UPSTREAM_BAD_GATEWAY);
       }
       if (serverBasePath && !validatedNext.pathname.startsWith(serverBasePath + '/') && validatedNext.pathname !== serverBasePath) {
-        return res.status(502).json({ error: 'Bad gateway: upstream redirect target blocked' });
+        return sendError(res, 502, 'Bad gateway: upstream redirect target blocked', ErrorCode.UPSTREAM_BAD_GATEWAY);
       }
       currentUrl = validatedNext;
     }
     // Still redirecting after MAX_REDIRECTS+1 fetches — don't relay a bodiless 3xx.
     if (response && response.status >= 300 && response.status < 400) {
       destroyStream(response.data);
-      return res.status(502).json({ error: 'Bad gateway: too many redirects' });
+      return sendError(res, 502, 'Bad gateway: too many redirects', ErrorCode.UPSTREAM_BAD_GATEWAY);
     }
   } catch (error) {
     if (res.headersSent || res.writableEnded) return;
@@ -509,7 +612,7 @@ router.all(
     ) {
       // Header timeout fired — upstream accepted the connection but never
       // responded.
-      return res.status(504).json({ error: 'Bad gateway: Jellyfin server timed out' });
+      return sendError(res, 504, 'Bad gateway: Jellyfin server timed out', ErrorCode.UPSTREAM_TIMEOUT);
     }
     if (axiosError.response) {
       // Forward error status and body
@@ -521,19 +624,33 @@ router.all(
       }
       return;
     }
-    return res.status(502).json({ error: 'Bad gateway: could not reach Jellyfin server' });
+    return sendError(res, 502, 'Bad gateway: could not reach Jellyfin server', ErrorCode.UPSTREAM_UNREACHABLE);
   }
 
   if (!response) {
-    return res.status(502).json({ error: 'Bad gateway: could not reach Jellyfin server' });
+    return sendError(res, 502, 'Bad gateway: could not reach Jellyfin server', ErrorCode.UPSTREAM_UNREACHABLE);
   }
 
   // Reserve bare 401 for "no/invalid Siren session" (handled above). An
-  // upstream Jellyfin 401 (revoked token, password change) must not trigger
-  // the client's 401 → logout → /login interceptor, so map it to 502.
+  // upstream Jellyfin 401 (revoked token, password change) maps to a coded
+  // 502 so the client can force re-login without tripping the generic
+  // 401 → logout path used for Siren sessions. Upstream 403 (denied
+  // library/item) is a permission failure, not an auth failure — it stays a
+  // visible error and must not force logout, since re-login would not fix it.
   if (response.status === 401) {
     destroyStream(response.data);
-    return res.status(502).json({ error: 'Jellyfin rejected the request — please log in again' });
+    return sendError(res, 502, 'Jellyfin rejected the request — please log in again', ErrorCode.UPSTREAM_UNAUTHORIZED);
+  }
+  if (response.status === 403) {
+    destroyStream(response.data);
+    return sendError(res, 502, 'Jellyfin denied access to this item or library', ErrorCode.UPSTREAM_FORBIDDEN);
+  }
+
+  // Normalize remaining upstream failures (>=400) to Siren's {error, code}
+  // shape instead of relaying raw HTML/ProblemDetails bodies the client's
+  // error describer can't parse (which degraded to a generic toast).
+  if (response.status >= 400) {
+    return sendUpstreamError(res, response.status, response.data, 'Jellyfin request failed');
   }
 
   // Forward status

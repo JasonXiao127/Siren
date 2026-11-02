@@ -2,6 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/authStore';
 import { usePlayerStore } from '@/store/playerStore';
 import { getFavorites, buildTrackImageUrl } from '@/api/jellyfin';
+import { useMusicLibraryId } from '@/hooks/useMusicLibrary';
+import { describeQueryError } from '@/lib/queryError';
 import { Artwork } from '@/components/common/Artwork';
 import { LoadingSkeleton } from '@/components/common/LoadingSkeleton';
 import { EmptyState } from '@/components/common/EmptyState';
@@ -16,10 +18,12 @@ export default function Favorites() {
   const currentIndex = usePlayerStore((state) => state.currentIndex);
   const queue = usePlayerStore((state) => state.queue);
 
-  const { data: tracks, isLoading } = useQuery({
-    queryKey: ['favorites', userId],
-    queryFn: () => getFavorites(userId),
-    enabled: !!userId,
+  const { musicLibraryId, viewsReady } = useMusicLibraryId(userId);
+
+  const { data: tracks, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ['favorites', userId, musicLibraryId],
+    queryFn: () => getFavorites(userId, musicLibraryId),
+    enabled: !!userId && viewsReady,
   });
 
   function handlePlayAll() {
@@ -64,8 +68,21 @@ export default function Favorites() {
       </div>
 
       {/* Track list */}
-      {isLoading ? (
+      {isLoading || !viewsReady ? (
         <LoadingSkeleton variant="list" count={10} />
+      ) : isError ? (
+        <EmptyState
+          title="Couldn't load liked songs"
+          description={describeQueryError(error)}
+          action={
+            <button
+              onClick={() => void refetch()}
+              className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-secondary/70"
+            >
+              Retry
+            </button>
+          }
+        />
       ) : !tracks || tracks.length === 0 ? (
         <EmptyState
           title="No liked songs yet"

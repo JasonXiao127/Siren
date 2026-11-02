@@ -1,13 +1,15 @@
 import { Music } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 interface EmptyStateProps {
   title: string;
   description?: string;
   className?: string;
+  action?: ReactNode;
 }
 
-export function EmptyState({ title, description, className }: EmptyStateProps) {
+export function EmptyState({ title, description, className, action }: EmptyStateProps) {
   return (
     <div
       className={cn(
@@ -20,8 +22,9 @@ export function EmptyState({ title, description, className }: EmptyStateProps) {
       </div>
       <h3 className="text-lg font-semibold">{title}</h3>
       {description && (
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <p className="max-w-md text-sm text-muted-foreground">{description}</p>
       )}
+      {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }

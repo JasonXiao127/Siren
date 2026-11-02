@@ -10,13 +10,8 @@ import { toast, Toaster } from 'sonner';
 import App from './App';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
 import { getBasePath } from '@/lib/base';
+import { describeQueryError, describeQueryErrorDetail } from '@/lib/queryError';
 import './index.css';
-
-function describeQueryError(error: unknown): string {
-  const response = (error as { response?: { data?: { error?: string } } })
-    ?.response;
-  return response?.data?.error || 'Something went wrong — please try again';
-}
 
 // Toast dedupe: Home fires three queries at once, so a dead server would
 // otherwise produce three identical toasts simultaneously.
@@ -27,6 +22,12 @@ const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error) => {
       const message = describeQueryError(error);
+      // Stable code + status for bug reports; the toast stays human-readable.
+      const detail = describeQueryErrorDetail(error);
+      console.error('[siren] Query failed:', {
+        code: detail.code,
+        status: detail.status,
+      });
       const now = Date.now();
       if (message === lastToastMessage && now - lastToastAt < 2000) return;
       lastToastMessage = message;
