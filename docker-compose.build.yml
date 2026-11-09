@@ -1,0 +1,13 @@
+# Local build override. The default docker-compose.yml pulls the published
+# image from GitHub Container Registry. To build from source instead:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# The local image is tagged siren:local so it never overwrites the GHCR tag.
+services:
+  siren:
+    image: siren:local
+    build:
+      context: .
+      args:
+        BASE_PATH: ${BASE_PATH:-/}

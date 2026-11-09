@@ -1,12 +1,13 @@
 services:
   siren:
-    # Build from the local Dockerfile by default. To use the pre-built image
-    # from Docker Hub instead, comment out `build` and run `docker pull` first.
-    build:
-      context: .
-      args:
-        BASE_PATH: ${BASE_PATH:-/}
-    image: maraudermarauder/siren:latest
+    # Self-contained service: copy this block and the `siren-data` volume below
+    # into any Compose file. Pulls the image published to GitHub Container
+    # Registry by GitHub Actions, so the repo does not need to be cloned:
+    #   docker compose pull && docker compose up -d
+    # If the GHCR package is private, run `docker login ghcr.io` first.
+    # For a local source build, use docker-compose.build.yml (see README).
+    # To pin a release, change :latest to a version tag, e.g. :1.1.5.
+    image: ghcr.io/jasonxiao127/siren:latest
     container_name: siren
     ports:
       - "8080:8080"
@@ -20,10 +21,11 @@ services:
       # leave 0 for direct exposure.
       - TRUST_PROXY=${TRUST_PROXY:-0}
       # Subpath mount (e.g. /siren) — must match the image's BASE_PATH build
-      # arg. For the default root image leave as /. To serve under /siren,
-      # rebuild with `docker compose build --build-arg BASE_PATH=/siren` and
-      # set BASE_PATH=/siren here. Never set SIREN_TOKEN here (Electron-only;
-      # it would 403 every browser /api call).
+      # arg. The published GHCR image is built for root (/), so leave this as
+      # / for it. To serve under /siren, build locally with
+      # docker-compose.build.yml and pass BASE_PATH=/siren to build and run.
+      # Never set SIREN_TOKEN here (Electron-only; it would 403 every browser
+      # /api call).
       - BASE_PATH=${BASE_PATH:-/}
     volumes:
       - siren-data:/data
@@ -36,4 +38,6 @@ services:
       start_period: 10s
 
 volumes:
+  # Copy this entry along with the siren service when pasting into another
+  # Compose file.
   siren-data:

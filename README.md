@@ -37,12 +37,24 @@ Dev runs the UI on `5177` and the API on `5176`.
 
 ## Docker
 
+The `siren` service in [`docker-compose.yml`](docker-compose.yml) is
+self-contained: copy it and the `siren-data` volume entry into any Compose
+file, or run the file standalone. It pulls the image published to GitHub
+Container Registry, so the repo does not need to be cloned.
+
 ```bash
-docker compose up --build   # serves http://localhost:8080
-npm run start:web           # local equivalent (needs a server build first)
+docker compose pull && docker compose up -d   # serves http://localhost:8080
+npm run build:web && npm run start:web        # local non-Docker equivalent
 ```
 
-- Logins persist in a `siren-data` volume (`/data` in the container).
+- The `latest` image is built and pushed by GitHub Actions on every `v*` tag.
+  To pin a release, change `:latest` to a version tag such as `:1.1.5`.
+- On the first publish, the GHCR package may be private. Set it to public in
+  the package settings, or run `docker login ghcr.io` before pulling.
+- To build from source instead, use the build override:
+  `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
+- Logins persist in a `siren-data` volume (`/data` in the container). Copy the
+  top-level `volumes:` entry along with the service.
 - Behind a TLS proxy, set `TRUST_PROXY=1`.
 - Never set `SIREN_TOKEN` here — it's Electron-only and would block every
   browser request.
@@ -57,8 +69,10 @@ VITE_BASE_PATH=/siren npm run build --workspace=@siren/client
 npm run build --workspace=@siren/server
 BASE_PATH=/siren npm run start:web   # serves http://127.0.0.1:5176/siren/
 
-docker compose build --build-arg BASE_PATH=/siren
-BASE_PATH=/siren docker compose up   # serves http://localhost:8080/siren/
+# The published GHCR image is root-only; build a /siren image locally.
+BASE_PATH=/siren docker compose -f docker-compose.yml -f docker-compose.build.yml build
+BASE_PATH=/siren docker compose -f docker-compose.yml -f docker-compose.build.yml up
+# serves http://localhost:8080/siren/
 ```
 
 ```
@@ -97,7 +111,7 @@ server/            Express API — auth, Jellyfin proxy, sessions
 electron/main.ts   Window, app:// handler, server process
 packaging/         App icons (`npm run icons` to regenerate)
 scripts/           dev.mjs, build-electron.mjs, gen-icon.cjs, test-sessions.mjs
-.github/workflows/build.yml  Release builds (win/mac/linux installers + Docker image)
+.github/workflows/build.yml  Release builds (win/mac/linux installers + GHCR image)
 ```
 
 ## Notes
