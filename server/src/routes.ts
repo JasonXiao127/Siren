@@ -555,6 +555,11 @@ router.all(
           signal: controller.signal,
           headers: {
             'Authorization': buildAuthorizationHeader(deviceId, token),
+            // Some browsers (including current Chromium builds on LAN HTTP)
+            // fail to decode Brotli-compressed proxy responses with
+            // ERR_CONTENT_DECODING_FAILED. Ask Jellyfin for plain bytes; the
+            // proxy forwards them unchanged.
+            'Accept-Encoding': 'identity',
             ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] } : {}),
             ...(req.headers['range'] ? { 'Range': req.headers['range'] } : {}),
             ...(req.headers['if-none-match'] ? { 'If-None-Match': req.headers['if-none-match'] } : {}),
