@@ -48,7 +48,7 @@ npm run build:web && npm run start:web        # local non-Docker equivalent
 ```
 
 - The `latest` image is built and pushed by GitHub Actions on every `v*` tag.
-  To pin a release, change `:latest` to a version tag such as `:1.1.5`.
+  To pin a release, change `:latest` to a version tag from one of those releases.
 - On the first publish, the GHCR package may be private. Set it to public in
   the package settings, or run `docker login ghcr.io` before pulling.
 - To build from source instead, use the build override:

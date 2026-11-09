@@ -6,7 +6,8 @@ services:
     #   docker compose pull && docker compose up -d
     # If the GHCR package is private, run `docker login ghcr.io` first.
     # For a local source build, use docker-compose.build.yml (see README).
-    # To pin a release, change :latest to a version tag, e.g. :1.1.5.
+    # To pin a release, change :latest to a version tag published by a v*
+    # release (the first tagged release after the GHCR switch).
     image: ghcr.io/jasonxiao127/siren:latest
     container_name: siren
     ports:
