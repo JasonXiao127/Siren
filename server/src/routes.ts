@@ -36,8 +36,8 @@ const CLIENT_VERSION_RAW = process.env.SIREN_APP_VERSION || '1.1.1';
 // api_key) are disabled by default (EnableLegacyAuthorization=false) and will
 // be removed entirely in a future release. This header shape works back to
 // Jellyfin 10.8, but Siren officially targets 12+ only.
-function sanitizeHeaderValue(value: string, maxLen = 64): string {
-  return value.replace(/["\r\n,]/g, '').slice(0, maxLen);
+function sanitizeHeaderValue(value: string | undefined, maxLen = 64): string {
+  return typeof value === 'string' ? value.replace(/["\r\n,]/g, '').slice(0, maxLen) : '';
 }
 
 const DEVICE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;

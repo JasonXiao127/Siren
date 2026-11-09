@@ -7,6 +7,8 @@ import { useAuthStore } from '@/store/authStore';
 import { login as apiLogin } from '@/api/jellyfin';
 import { withBase } from '@/lib/base';
 
+type Protocol = 'http' | 'https';
+
 function isValidServerUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -14,6 +16,35 @@ function isValidServerUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Builds the Jellyfin URL from the split form fields. The host field also
+ * accepts a pasted full URL; its scheme and an explicit port are honored so
+ * old bookmarks can still be pasted in.
+ */
+function resolveServerUrl(protocol: Protocol, rawHost: string, rawPort: string): string {
+  let value = rawHost.trim();
+  let scheme = protocol;
+  const schemeMatch = value.match(/^(https?):\/\//i);
+  if (schemeMatch) {
+    scheme = schemeMatch[1].toLowerCase() as Protocol;
+    value = value.slice(schemeMatch[0].length);
+  }
+
+  // Keep any Jellyfin base path (e.g. /jellyfin) after the authority.
+  const slash = value.indexOf('/');
+  let authority = slash === -1 ? value : value.slice(0, slash);
+  const path = slash === -1 ? '' : value.slice(slash);
+
+  const hasPort =
+    /^\[[^\]]+\]:\d+$/.test(authority) ||
+    (!authority.startsWith('[') && /:\d+$/.test(authority));
+  if (!hasPort && rawPort.trim()) {
+    authority = `${authority}:${rawPort.trim()}`;
+  }
+
+  return `${scheme}://${authority}${path}`.replace(/\/+$/, '');
 }
 
 // Mirrors the server's minimal URL guard so blocked targets get a clear
@@ -38,17 +69,44 @@ export default function Login() {
   const login = useAuthStore((state) => state.login);
   const deviceId = useAuthStore((state) => state.deviceId);
 
-  const [serverUrl, setServerUrl] = useState('');
+  const [protocol, setProtocol] = useState<Protocol>('http');
+  const [serverHost, setServerHost] = useState('');
+  const [serverPort, setServerPort] = useState('8096');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+
+  function handleHostChange(value: string) {
+    setServerHost(value);
+    // Keep the protocol selector in sync when someone pastes a full URL.
+    const scheme = value.match(/^(https?):\/\//i);
+    if (scheme) setProtocol(scheme[1].toLowerCase() as Protocol);
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
 
+    if (!serverHost.trim()) {
+      toast.error('Enter your Jellyfin server IP or hostname');
+      setLoading(false);
+      return;
+    }
+
+    const portValue = serverPort.trim();
+    if (portValue) {
+      const port = Number(portValue);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        toast.error('Enter a valid port (1–65535)');
+        setLoading(false);
+        return;
+      }
+    }
+
+    const serverUrl = resolveServerUrl(protocol, serverHost, portValue);
+
     if (!isValidServerUrl(serverUrl)) {
-      toast.error('Please enter a valid server URL (http:// or https://)');
+      toast.error('Please enter a valid server address');
       setLoading(false);
       return;
     }
@@ -106,18 +164,46 @@ export default function Login() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <label htmlFor="serverUrl" className="text-sm font-medium">
-              Server URL
+            <label htmlFor="serverHost" className="text-sm font-medium">
+              Jellyfin server
             </label>
-            <Input
-              id="serverUrl"
-              type="url"
-              placeholder="http://192.168.1.100:8096"
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-              required
-              autoFocus
-            />
+            <div className="flex gap-2">
+              <select
+                aria-label="Protocol"
+                value={protocol}
+                onChange={(e) => setProtocol(e.target.value as Protocol)}
+                className="h-9 shrink-0 rounded-md border border-input bg-background px-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="http">http://</option>
+                <option value="https">https://</option>
+              </select>
+              <Input
+                id="serverHost"
+                type="text"
+                placeholder="192.168.1.100"
+                value={serverHost}
+                onChange={(e) => handleHostChange(e.target.value)}
+                required
+                autoFocus
+                className="min-w-0 flex-1"
+              />
+              <Input
+                id="serverPort"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={65535}
+                placeholder="8096"
+                aria-label="Port"
+                value={serverPort}
+                onChange={(e) => setServerPort(e.target.value)}
+                required
+                className="w-24 text-center"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Port defaults to 8096. Choose https:// if your Jellyfin uses TLS.
+            </p>
           </div>
 
           <div className="space-y-2">

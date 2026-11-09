@@ -93,25 +93,55 @@ function scheduleSave(): void {
   saveTimer.unref?.();
 }
 
+/**
+ * Older releases persisted sessions without the fields the proxy now requires
+ * (notably `deviceId`). Loading one of those would throw while building the
+ * Jellyfin Authorization header, killing the request mid-flight. Reject the
+ * whole row instead so the browser gets a clean 401 and can re-login.
+ */
+export function isUsableSession(value: unknown): value is Session {
+  if (!value || typeof value !== 'object') return false;
+  const session = value as Partial<Session>;
+  return (
+    typeof session.id === 'string' &&
+    session.id.length > 0 &&
+    typeof session.serverUrl === 'string' &&
+    session.serverUrl.length > 0 &&
+    typeof session.token === 'string' &&
+    session.token.length > 0 &&
+    typeof session.deviceId === 'string' &&
+    session.deviceId.length > 0 &&
+    typeof session.userId === 'string' &&
+    session.userId.length > 0 &&
+    typeof session.userName === 'string' &&
+    session.userName.length > 0 &&
+    typeof session.createdAt === 'number'
+  );
+}
+
 /** Loads persisted sessions at startup, pruning expired entries. */
 export function loadSessions(): void {
   const sessionsFile = getSessionsFile();
   try {
     const raw = fs.readFileSync(sessionsFile, 'utf8');
     const parsed = JSON.parse(raw) as { version?: number; sessions?: Session[] };
+    let dropped = 0;
     for (const session of parsed.sessions ?? []) {
-      if (
-        session &&
-        typeof session.id === 'string' &&
-        typeof session.createdAt === 'number' &&
-        typeof session.token === 'string'
-      ) {
-        // Migrate pre-bornAt rows: absolute lifetime starts at createdAt.
-        if (typeof session.bornAt !== 'number') {
-          session.bornAt = session.createdAt;
-        }
-        sessions.set(session.id, session);
+      if (!isUsableSession(session)) {
+        dropped++;
+        continue;
       }
+      // Migrate pre-bornAt rows: absolute lifetime starts at createdAt.
+      if (typeof session.bornAt !== 'number') {
+        session.bornAt = session.createdAt;
+      }
+      sessions.set(session.id, session);
+    }
+    if (dropped > 0) {
+      console.warn(
+        `[siren] Dropped ${dropped} invalid persisted session(s); affected clients must sign in again`
+      );
+      scheduleSave();
     }
     pruneExpired();
   } catch (err) {
@@ -152,7 +182,14 @@ export function flushSessions(): void {
 
 export function getSession(id: string): Session | null {
   const session = sessions.get(id);
-  if (!session) return null;
+  if (!isUsableSession(session)) {
+    if (session) {
+      // A malformed row inserted by an older build or a manual edit.
+      sessions.delete(id);
+      scheduleSave();
+    }
+    return null;
+  }
   const now = Date.now();
   if (now - session.createdAt > SESSION_TTL_MS || now - session.bornAt > SESSION_ABSOLUTE_TTL_MS) {
     sessions.delete(id);
