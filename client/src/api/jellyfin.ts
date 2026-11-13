@@ -95,11 +95,15 @@ export interface SessionResponse {
     name: string;
   };
   serverUrl: string;
+  /**
+   * Only present when the server had to mint one for a session that predates
+   * restore tokens (e.g. a login created before an upgrade).
+   */
+  restoreToken?: string;
 }
 
 export interface LoginResponse extends SessionResponse {
-  /** Absent on servers that predate the restore-token feature. */
-  restoreToken?: string;
+  restoreToken: string;
 }
 
 export async function login(

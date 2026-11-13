@@ -47,18 +47,26 @@ function ProtectedLayout() {
 
     const syncFromSession = (
       sessionUser: { id: string; name: string } | undefined,
-      sessionServerUrl: string | undefined
+      sessionServerUrl: string | undefined,
+      sessionRestoreToken?: string
     ) => {
       if (
         !cancelled &&
         sessionUser &&
         typeof sessionUser.id === 'string' &&
-        sessionServerUrl &&
-        (sessionUser.id !== userId ||
-          sessionUser.name !== user?.name ||
-          sessionServerUrl !== serverUrl)
+        sessionServerUrl
       ) {
-        login(sessionServerUrl, sessionUser.id, sessionUser, restoreToken);
+        // /auth/session mints a token for sessions that predate the feature;
+        // keep it so the next cookie wipe restores silently.
+        const nextToken = sessionRestoreToken ?? restoreToken;
+        if (
+          sessionUser.id !== userId ||
+          sessionUser.name !== user?.name ||
+          sessionServerUrl !== serverUrl ||
+          nextToken !== restoreToken
+        ) {
+          login(sessionServerUrl, sessionUser.id, sessionUser, nextToken);
+        }
       }
     };
 
@@ -71,7 +79,7 @@ function ProtectedLayout() {
     void (async () => {
       try {
         const res = await apiClient.get('/auth/session');
-        syncFromSession(res.data?.user, res.data?.serverUrl);
+        syncFromSession(res.data?.user, res.data?.serverUrl, res.data?.restoreToken);
       } catch (error) {
         if (!isUnauthorized(error)) return;
         if (restoreToken) {

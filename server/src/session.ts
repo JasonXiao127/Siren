@@ -275,6 +275,20 @@ export function createSession(data: Omit<Session, 'id' | 'createdAt' | 'bornAt' 
 }
 
 /**
+ * Mints a restore token for a session that predates the feature (or lost its
+ * hash). Returns the raw token exactly once; only the hash is stored. Returns
+ * null when the session already has a hash — the server cannot recover a raw
+ * token it never kept.
+ */
+export function ensureRestoreToken(session: Session): string | null {
+  if (session.restoreHash) return null;
+  const restoreToken = crypto.randomBytes(32).toString('base64url');
+  session.restoreHash = hashRestoreToken(restoreToken);
+  scheduleSave();
+  return restoreToken;
+}
+
+/**
  * Looks a session up by its raw restore token. Uses a constant-time digest
  * comparison and runs the same TTL/pruning path as a cookie lookup, so an
  * expired session can never be revived through its token. Returns null for

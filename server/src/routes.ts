@@ -12,6 +12,7 @@ import type { ErrorResponse } from './types';
 import {
   createSession,
   deleteSession,
+  ensureRestoreToken,
   findSessionByRestoreToken,
   getSession,
   parseCookies,
@@ -335,7 +336,15 @@ router.get('/auth/session', (req: Request, res: Response) => {
   // Browsers never report cookie age back, so reissue on every probe to keep
   // the cookie's Max-Age aligned with the server's sliding session TTL.
   res.cookie(SESSION_COOKIE_NAME, session.id, cookieOptions(req.secure === true));
-  return res.json({ user: { id: session.userId, name: session.userName }, serverUrl: session.serverUrl });
+  // A session created before restore tokens existed has no hash yet. Mint one
+  // now and hand it to the client so an already-signed-in browser survives
+  // its next cookie wipe without a fresh login.
+  const restoreToken = ensureRestoreToken(session);
+  return res.json({
+    user: { id: session.userId, name: session.userName },
+    serverUrl: session.serverUrl,
+    ...(restoreToken ? { restoreToken } : {}),
+  });
 });
 
 // POST /api/auth/logout

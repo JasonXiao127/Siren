@@ -15,8 +15,15 @@ if (!READ_MODE) {
   process.env.SIREN_DATA_DIR = dataDir;
 }
 
-const { createSession, loadSessions, getSession, findSessionByRestoreToken, flushSessions } =
-  await import('../server/src/session');
+const {
+  createSession,
+  loadSessions,
+  getSession,
+  findSessionByRestoreToken,
+  ensureRestoreToken,
+  deleteSession,
+  flushSessions,
+} = await import('../server/src/session');
 
 const file = path.join(dataDir, 'sessions.json');
 
@@ -48,6 +55,30 @@ if (findSessionByRestoreToken(restoreToken)?.id !== created.id) {
 if (findSessionByRestoreToken('not-the-token') !== null) {
   throw new Error('FAIL: invalid restore token must not resolve');
 }
+
+// 1b. Legacy rows (created before restore tokens) get one minted on demand.
+const legacy = createSession({
+  serverUrl: 'https://jellyfin.example.com',
+  token: 'tok_legacy',
+  deviceId: 'dev-legacy',
+  userId: 'user-2',
+  userName: 'bob',
+});
+if (ensureRestoreToken(legacy.session) !== null) {
+  throw new Error('FAIL: a session with a hash must not mint a second token');
+}
+delete legacy.session.restoreHash;
+const minted = ensureRestoreToken(legacy.session);
+if (!minted) throw new Error('FAIL: legacy session did not mint a restore token');
+if (findSessionByRestoreToken(minted)?.id !== legacy.session.id) {
+  throw new Error('FAIL: minted token does not resolve');
+}
+deleteSession(legacy.session.id);
+if (findSessionByRestoreToken(minted) !== null) {
+  throw new Error('FAIL: deleted session still restores');
+}
+console.log('PASS: legacy session minted a restore token, logout revokes it');
+
 flushSessions();
 
 if (!fs.existsSync(file)) throw new Error('FAIL: sessions.json not written');
