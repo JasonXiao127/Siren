@@ -94,6 +94,11 @@ Dev stays root-only; subpath is for prod builds.
   so other local programs can't abuse the proxy.
 - Your Jellyfin token stays in the backend; the browser uses an httpOnly
   session cookie. Logins are saved to `sessions.json` and survive restarts.
+- Browsers that discard cookies when they close still keep localStorage, so
+  the app stores a hashed per-device restore token there and silently trades
+  it for a fresh session cookie on the next launch. Sessions slide for 30 days
+  of activity and are capped at one year; clearing site data or signing out
+  ends the saved login.
 
 ## Limitations
 

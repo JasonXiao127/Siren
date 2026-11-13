@@ -6,11 +6,13 @@ import {
   LoginRequest,
   JellyfinAuthResponse,
   LoginSuccessResponse,
+  RestoreRequest,
 } from './types';
 import type { ErrorResponse } from './types';
 import {
   createSession,
   deleteSession,
+  findSessionByRestoreToken,
   getSession,
   parseCookies,
   cookieOptions,
@@ -121,6 +123,20 @@ const loginLimiter = rateLimit({
   } satisfies ErrorResponse,
 });
 
+// Restore runs once per boot, but several devices can share one NAT IP.
+// Generous enough not to lock out a household; still bounded against token
+// guessing (the tokens are 256-bit, so this is defense in depth).
+const restoreLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    error: 'Too many restore attempts. Please sign in again.',
+    code: ErrorCode.RATE_LIMITED,
+  } satisfies ErrorResponse,
+});
+
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
@@ -182,7 +198,7 @@ router.post(
         );
       }
 
-      const { session, replaced } = createSession({
+      const { session, replaced, restoreToken } = createSession({
         serverUrl: validatedUrl.toString().replace(/\/$/, ''),
         token: data.AccessToken,
         deviceId,
@@ -218,6 +234,7 @@ router.post(
           name: data.User.Name,
         },
         serverUrl: session.serverUrl,
+        restoreToken,
       };
 
       return res.json(result);
@@ -272,6 +289,36 @@ router.post(
         ErrorCode.UPSTREAM_UNREACHABLE
       );
     }
+  }
+);
+
+// POST /api/auth/restore — cookie-less re-authentication for browsers that
+// drop cookies between runs. The client keeps a high-entropy token in
+// localStorage (which survives where the cookie does not) and trades it for a
+// fresh httpOnly session cookie. The token is matched against a hash on the
+// server, so sessions.json never holds a usable bearer value.
+router.post(
+  '/auth/restore',
+  restoreLimiter,
+  json({ limit: '2kb' }),
+  (req: Request, res: Response) => {
+    const { token } = req.body as RestoreRequest;
+    if (!token || typeof token !== 'string') {
+      return sendError(res, 400, 'Missing restore token', ErrorCode.AUTH_MISSING_FIELDS);
+    }
+
+    const session = findSessionByRestoreToken(token);
+    if (!session) {
+      // Unknown, expired, or pre-restore-token session: the client must sign
+      // in again. Deliberately identical for all causes (no oracle).
+      return sendError(res, 401, 'Not authenticated', ErrorCode.AUTH_INVALID_RESTORE_TOKEN);
+    }
+
+    res.cookie(SESSION_COOKIE_NAME, session.id, cookieOptions(req.secure === true));
+    return res.json({
+      user: { id: session.userId, name: session.userName },
+      serverUrl: session.serverUrl,
+    });
   }
 );
 

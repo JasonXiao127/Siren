@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/store/authStore';
 import { useState, useEffect } from 'react';
 import { apiClient } from '@/api/client';
+import { restoreSession } from '@/api/jellyfin';
 import TopBar from '@/components/layout/TopBar';
 import Sidebar from '@/components/layout/Sidebar';
 import MainContent from '@/components/layout/MainContent';
@@ -21,6 +22,7 @@ function ProtectedLayout() {
   const user = useAuthStore((state) => state.user);
   const userId = useAuthStore((state) => state.userId);
   const serverUrl = useAuthStore((state) => state.serverUrl);
+  const restoreToken = useAuthStore((state) => state.restoreToken);
   const login = useAuthStore((state) => state.login);
   const logout = useAuthStore((state) => state.logout);
   const location = useLocation();
@@ -29,41 +31,85 @@ function ProtectedLayout() {
   const [validating, setValidating] = useState(true);
 
   // Validate the httpOnly server session on boot. LocalStorage alone would
-  // paint the authed shell with a dead cookie (flash + 401 storm). On success
-  // sync the server's user/serverUrl into the store: a stale persisted userId
-  // (e.g. after a server-side user recreate) would otherwise make every
-  // proxied Jellyfin call use the wrong id and fail as "empty library".
+  // paint the authed shell with a dead cookie (flash + 401 storm). When the
+  // cookie is gone but the device restore token survived (browsers that clear
+  // cookies on exit), trade the token for a fresh cookie instead of bouncing
+  // to the login screen. On success sync the server's user/serverUrl into the
+  // store: a stale persisted userId (e.g. after a server-side user recreate)
+  // would otherwise make every proxied Jellyfin call use the wrong id and
+  // fail as "empty library".
   useEffect(() => {
     let cancelled = false;
     if (!user) {
       setValidating(false);
       return;
     }
-    apiClient
-      .get('/auth/session')
-      .then((res) => {
-        const sessionUser = res.data?.user as { id: string; name: string } | undefined;
-        const sessionServerUrl = res.data?.serverUrl as string | undefined;
-        if (
-          !cancelled &&
-          sessionUser &&
-          typeof sessionUser.id === 'string' &&
-          sessionServerUrl &&
-          (sessionUser.id !== userId || sessionServerUrl !== serverUrl)
-        ) {
-          login(sessionServerUrl, sessionUser.id, sessionUser);
+
+    const syncFromSession = (
+      sessionUser: { id: string; name: string } | undefined,
+      sessionServerUrl: string | undefined
+    ) => {
+      if (
+        !cancelled &&
+        sessionUser &&
+        typeof sessionUser.id === 'string' &&
+        sessionServerUrl &&
+        (sessionUser.id !== userId ||
+          sessionUser.name !== user?.name ||
+          sessionServerUrl !== serverUrl)
+      ) {
+        login(sessionServerUrl, sessionUser.id, sessionUser, restoreToken);
+      }
+    };
+
+    // Only a 401 means "this browser has no valid session". A network error or
+    // 5xx (container restarting, proxy hiccup) must keep the saved login so the
+    // next attempt can restore instead of wiping it.
+    const isUnauthorized = (err: unknown) =>
+      (err as { response?: { status?: number } })?.response?.status === 401;
+
+    void (async () => {
+      try {
+        const res = await apiClient.get('/auth/session');
+        syncFromSession(res.data?.user, res.data?.serverUrl);
+      } catch (error) {
+        if (!isUnauthorized(error)) return;
+        if (restoreToken) {
+          try {
+            const restored = await restoreSession(restoreToken);
+            if (!cancelled && restored?.user && restored.serverUrl) {
+              // Only write state when something actually changed. Re-setting
+              // an identical user object would re-run this effect forever if
+              // the browser also rejects the freshly issued cookie.
+              if (
+                restored.user.id !== userId ||
+                restored.user.name !== user?.name ||
+                restored.serverUrl !== serverUrl
+              ) {
+                login(
+                  restored.serverUrl,
+                  restored.user.id,
+                  restored.user,
+                  restoreToken
+                );
+              }
+              return;
+            }
+          } catch (restoreError) {
+            if (!isUnauthorized(restoreError)) return;
+            // Invalid/expired token — require a normal login.
+          }
         }
-      })
-      .catch(() => {
-        logout();
-      })
-      .finally(() => {
+        if (!cancelled) logout();
+      } finally {
         if (!cancelled) setValidating(false);
-      });
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
-  }, [user, userId, serverUrl, login, logout]);
+  }, [user, userId, serverUrl, restoreToken, login, logout]);
 
   if (!user) {
     const next = encodeURIComponent(location.pathname + location.search);

@@ -11,7 +11,14 @@ interface AuthState {
   userId: string;
   user: User | null;
   deviceId: string;
-  login: (serverUrl: string, userId: string, user: User) => void;
+  /**
+   * Long-lived per-device credential returned by /auth/login. A browser that
+   * clears cookies on exit still keeps localStorage, so this lets the app
+   * silently obtain a fresh session cookie on boot instead of asking for the
+   * password again.
+   */
+  restoreToken: string;
+  login: (serverUrl: string, userId: string, user: User, restoreToken?: string) => void;
   logout: () => void;
 }
 
@@ -44,12 +51,13 @@ export const useAuthStore = create<AuthState>()(
       userId: '',
       user: null,
       deviceId: getOrCreateDeviceId(),
+      restoreToken: '',
 
-      login: (serverUrl, userId, user) =>
-        set({ serverUrl, userId, user }),
+      login: (serverUrl, userId, user, restoreToken = '') =>
+        set({ serverUrl, userId, user, restoreToken }),
 
       logout: () =>
-        set({ serverUrl: '', userId: '', user: null }),
+        set({ serverUrl: '', userId: '', user: null, restoreToken: '' }),
     }),
     {
       name: 'siren-auth',
@@ -57,6 +65,7 @@ export const useAuthStore = create<AuthState>()(
         serverUrl: state.serverUrl,
         userId: state.userId,
         user: state.user,
+        restoreToken: state.restoreToken,
       }),
       // partialize is write-only; always keep the in-memory deviceId so a
       // corrupt or stale persisted blob can't replace it during rehydration.

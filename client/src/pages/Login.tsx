@@ -127,7 +127,7 @@ export default function Login() {
 
     try {
       const result = await apiLogin(serverUrl, username, password, deviceId);
-      login(result.serverUrl, result.user.id, result.user);
+      login(result.serverUrl, result.user.id, result.user, result.restoreToken);
       const next = searchParams.get('next');
       navigate(next && next.startsWith('/') && !next.startsWith('//') ? next : '/', { replace: true });
     } catch (error) {

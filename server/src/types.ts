@@ -9,6 +9,7 @@ export const ErrorCode = {
   AUTH_BAD_URL: 'AUTH_BAD_URL',
   AUTH_BAD_CREDENTIALS: 'AUTH_BAD_CREDENTIALS',
   AUTH_SERVER_NOT_FOUND: 'AUTH_SERVER_NOT_FOUND',
+  AUTH_INVALID_RESTORE_TOKEN: 'AUTH_INVALID_RESTORE_TOKEN',
   UPSTREAM_BAD_GATEWAY: 'UPSTREAM_BAD_GATEWAY',
   UPSTREAM_UNAUTHORIZED: 'UPSTREAM_UNAUTHORIZED',
   UPSTREAM_FORBIDDEN: 'UPSTREAM_FORBIDDEN',
@@ -52,4 +53,13 @@ export interface LoginSuccessResponse {
     name: string;
   };
   serverUrl: string;
+  /**
+   * Per-device credential the client stores in localStorage and exchanges for
+   * a fresh session cookie when the browser drops the cookie between runs.
+   */
+  restoreToken: string;
+}
+
+export interface RestoreRequest {
+  token: string;
 }

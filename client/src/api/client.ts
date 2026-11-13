@@ -48,7 +48,8 @@ apiClient.interceptors.response.use(
     const isAuthRoute =
       requestPath === '/auth/login' ||
       requestPath === '/auth/logout' ||
-      requestPath === '/auth/session';
+      requestPath === '/auth/session' ||
+      requestPath === '/auth/restore';
     // When a code is present, require both the Siren session-failure code and a
     // 401, so a relayed body carrying a coincidental code at another status
     // cannot force logout; untagged responses keep the status-only behavior.
@@ -61,6 +62,29 @@ apiClient.interceptors.response.use(
         (code === 'UPSTREAM_UNAUTHORIZED' && (status === 502 || status === 401 || status === 403))
       : status === 401;
     if (isUnauthenticated && !isAuthRoute) {
+      // A browser that clears cookies on exit still keeps localStorage, so
+      // trade the stored device token for a fresh cookie and retry once
+      // before forcing a re-login. The flag stops a retry loop when the
+      // restored cookie still gets rejected (revoked token, server reset).
+      const restoreToken = useAuthStore.getState().restoreToken;
+      const config = error.config as
+        | (typeof error.config & { _sirenRestored?: boolean })
+        | undefined;
+      if (restoreToken && config && !config._sirenRestored) {
+        config._sirenRestored = true;
+        try {
+          await apiClient.post('/auth/restore', { token: restoreToken });
+          return apiClient.request(config);
+        } catch (restoreError) {
+          // Only a definitive 401 means the token is dead. A network failure
+          // or server restart must not wipe the saved login — keep it for
+          // the next request/boot.
+          const restoreStatus = (restoreError as { response?: { status?: number } })?.response
+            ?.status;
+          if (restoreStatus !== 401) return Promise.reject(error);
+          // Invalid/expired token — fall through to a full logout.
+        }
+      }
       try {
         await apiClient.post('/auth/logout');
       } catch {

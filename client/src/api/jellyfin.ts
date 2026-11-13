@@ -89,12 +89,17 @@ function toArray<T>(value: unknown): T[] {
 
 // --- Auth ---
 
-export interface LoginResponse {
+export interface SessionResponse {
   user: {
     id: string;
     name: string;
   };
   serverUrl: string;
+}
+
+export interface LoginResponse extends SessionResponse {
+  /** Absent on servers that predate the restore-token feature. */
+  restoreToken?: string;
 }
 
 export async function login(
@@ -109,6 +114,15 @@ export async function login(
     password,
     deviceId,
   });
+  return response.data;
+}
+
+/**
+ * Exchanges the localStorage restore token for a fresh session cookie.
+ * Used when the browser dropped its cookie between runs.
+ */
+export async function restoreSession(token: string): Promise<SessionResponse> {
+  const response = await apiClient.post<SessionResponse>('/auth/restore', { token });
   return response.data;
 }
 

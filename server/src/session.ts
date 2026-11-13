@@ -12,14 +12,31 @@ export interface Session {
   createdAt: number;
   /** First creation time for the absolute lifetime cap (never slides). */
   bornAt: number;
+  /**
+   * SHA-256 (hex) of the per-device restore token. The raw token lives only
+   * in the client's localStorage, so a browser that drops the session cookie
+   * on exit can silently trade it for a fresh cookie instead of showing the
+   * login form. Optional: rows persisted by older releases have no token and
+   * simply require a normal login once.
+   */
+  restoreHash?: string;
 }
 
-export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days sliding
-export const SESSION_ABSOLUTE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days absolute max
+export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days sliding
+export const SESSION_ABSOLUTE_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year absolute max
 export const MAX_SESSIONS_PER_USER = 10;
 export const SESSION_COOKIE_NAME = 'siren-session';
+const MAX_RESTORE_TOKEN_LENGTH = 128;
 
 const sessions = new Map<string, Session>();
+
+// Domain-separated so the token hash can never collide with another SHA-256
+// use in the app.
+const RESTORE_TOKEN_PREFIX = 'siren-restore-v1:';
+
+export function hashRestoreToken(token: string): string {
+  return crypto.createHash('sha256').update(RESTORE_TOKEN_PREFIX + token).digest('hex');
+}
 
 // ---------------------------------------------------------------------------
 // Disk persistence
@@ -210,9 +227,11 @@ export interface CreateSessionResult {
   session: Session;
   /** Older rows evicted by this login (same device + LRU overflow) — caller should revoke their Jellyfin tokens. */
   replaced: Session[];
+  /** Raw per-device restore token; only its SHA-256 is persisted. */
+  restoreToken: string;
 }
 
-export function createSession(data: Omit<Session, 'id' | 'createdAt' | 'bornAt'>): CreateSessionResult {
+export function createSession(data: Omit<Session, 'id' | 'createdAt' | 'bornAt' | 'restoreHash'>): CreateSessionResult {
   const replaced: Session[] = [];
   // Replace any previous session for the same device identity so repeated
   // logins don't accumulate rows with live tokens until TTL. Keyed on
@@ -230,11 +249,13 @@ export function createSession(data: Omit<Session, 'id' | 'createdAt' | 'bornAt'>
   }
 
   const now = Date.now();
+  const restoreToken = crypto.randomBytes(32).toString('base64url');
   const session: Session = {
     ...data,
     id: crypto.randomUUID(),
     createdAt: now,
     bornAt: now,
+    restoreHash: hashRestoreToken(restoreToken),
   };
   sessions.set(session.id, session);
   // Cap rows per user (LRU by createdAt) so wiping deviceId can't mint
@@ -250,7 +271,29 @@ export function createSession(data: Omit<Session, 'id' | 'createdAt' | 'bornAt'>
     dirty = true;
   }
   scheduleSave();
-  return { session, replaced };
+  return { session, replaced, restoreToken };
+}
+
+/**
+ * Looks a session up by its raw restore token. Uses a constant-time digest
+ * comparison and runs the same TTL/pruning path as a cookie lookup, so an
+ * expired session can never be revived through its token. Returns null for
+ * unknown, malformed, or pre-restore-token rows.
+ */
+export function findSessionByRestoreToken(token: string): Session | null {
+  if (typeof token !== 'string' || !token || token.length > MAX_RESTORE_TOKEN_LENGTH) {
+    return null;
+  }
+  const expected = Buffer.from(hashRestoreToken(token), 'hex');
+  for (const [id, session] of sessions) {
+    if (!session.restoreHash) continue;
+    const stored = Buffer.from(session.restoreHash, 'hex');
+    if (stored.length !== expected.length) continue;
+    if (!crypto.timingSafeEqual(stored, expected)) continue;
+    // Also prunes an expired row and slides createdAt for active devices.
+    return getSession(id);
+  }
+  return null;
 }
 
 export function deleteSession(id: string): void {
